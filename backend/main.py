@@ -9,11 +9,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+FRONTEND_DEV_ORIGIN = "http://localhost:5173"
+
 app = FastAPI(title="Smart Dataset Explainer")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[FRONTEND_DEV_ORIGIN],
     allow_methods=["*"],
     allow_headers=["*"],
 )
