@@ -27,13 +27,17 @@ You point the AI at a piece of the system — a function, a feature, a refactor 
 The AI then:
 
 1. **Reads the relevant code** (or the refactor decision if it's new behavior).
-2. **Proposes a list of behaviors worth testing** — described in plain English, not code. Each behavior is one sentence: what the thing does and why it matters.
+2. **Proposes a list of behaviors worth testing**, in this format for each:
+   - *Behavior:* one sentence describing what the code does
+   - *Why:* one sentence explaining what breaks or misbehaves for the user if this behavior is wrong — not "it would fail the test" but the concrete downstream consequence
 3. **Flags which behaviors are high-risk** — the ones most likely to break or cause user-visible problems.
 4. **Calls out non-obvious edge cases** — things you might not think of but would bite you (e.g. "What happens if TASKS.md has no `## Active` section at all?" or "What if a task title contains markdown characters like `**` or `|`?").
 
-You review the list. Cross off anything you don't care about. Ask questions about anything you don't understand. Add anything the AI missed that you know matters from using the product.
+The "why" is mandatory. If the AI cannot articulate why a behavior matters to the user, it is probably not worth testing.
 
-The output of this step is a confirmed list of behaviors to test, in plain English.
+You review the list. Cross off anything where the "why" doesn't justify the test. Ask questions about anything you don't understand. Add anything the AI missed that you know matters from using the product.
+
+The output of this step is a confirmed list of behaviors to test, each with its plain-English justification.
 
 ### Step 2: Define specific test cases and expected failures (AI, reviewed by you)
 
