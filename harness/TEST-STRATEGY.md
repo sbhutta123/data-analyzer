@@ -41,23 +41,22 @@ The output of this step is a confirmed list of behaviors to test, each with its 
 
 ### Step 2: Define specific test cases and expected failures (AI, reviewed by you)
 
-For each behavior from Step 1, the AI proposes specific test cases with concrete inputs and outputs:
+Before writing any test code, the AI turns each confirmed behavior into specific test cases, presented as natural-language sentences grouped by theme:
 
-Before writing any test code, the AI turns each confirmed behavior into specific test cases:
-
-Format:
+Format — each test is one sentence: "When [action], [expected outcome]."
 
 ```
-Test 1: [name]
-  Input: [what goes in]
-  Expected: [what should come out]
-  Expected failure: "Expected [X] but received [Y]" or "Function not found" etc.
+**Stdout capture:**
+- When the code is `print('hello world')`, the result should contain "hello world" in stdout and no error.
 
-Test 2: [name]
-  ...
+**Error handling:**
+- When the code has a syntax error like `def foo(`, the result should contain "SyntaxError" in the error field.
+- When the code raises a runtime error like `1 / 0`, the result should contain "ZeroDivisionError" in the error field.
 ```
 
-**You review this list.** Remove tests you don't care about. Add cases the AI missed. Confirm the expected failures make sense — they should describe the *behavior* being wrong, not a setup error.
+Group related tests under a shared heading so you can approve or reject a whole category at once.
+
+**You review this list.** Remove tests you don't care about. Add cases the AI missed. Confirm each sentence matches your intent for the behavior.
 
 Only proceed to Step 3 after you've confirmed.
 

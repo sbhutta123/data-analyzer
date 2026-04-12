@@ -210,9 +210,17 @@ if (!isSecure)
 
 ---
 
+## Cross-Platform Compatibility
+
+All backend code must work on macOS, Linux, and Windows. Do not use Unix-only APIs (e.g., `signal.SIGALRM`, `/proc` filesystem, Unix domain sockets). When a cross-platform alternative exists, use it. When a platform-specific API is unavoidable, document the limitation and provide a fallback.
+
+Concretely: for timeouts, use `concurrent.futures` with a `timeout` argument or `multiprocessing` — never `signal.SIGALRM`.
+
+---
+
 ## Python Module Principles
 
-When working in `src/` modules:
+When working in backend modules:
 - Avoid side effects at import time; keep I/O and API calls inside functions or `main()`
 - Use a `if __name__ == "__main__":` guard for script execution
 - Keep configuration in explicit constants or environment variables, not implicit globals
