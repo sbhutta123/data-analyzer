@@ -2,9 +2,12 @@ We are only building a prototype here, so we do not need to pay special attentio
 
 Keep the overall architecture simple. Stick to a monorepo for simpler apps or a layered architecture for more complex ones. Do not do service based architectures or event-driven architectures. 
 
-Observability will be paramount for our ability to move quickly, so we should pay special attention to making robust unit, integration and functional tests. 
+Observability will be paramount for our ability to move quickly. This has two complementary aspects:
 
-Ease of trace review is a top priority. Operation logs and execution traces should be structured for human readability and quick debugging. 
+1. **Testing** (pre-deployment): Robust unit, integration, and functional tests verify correctness before code runs. See `harness/TEST-STRATEGY.md`.
+2. **Runtime diagnosis** (during execution): A per-session context buffer tracks recent operations in memory. When an error reaches a user-facing boundary, an LLM troubleshooter agent diagnoses it from that context — no persistent log infrastructure needed. See `harness/OBSERVABILITY-STRATEGY.md`.
+
+Ease of trace review is a top priority. The troubleshooter produces plain-English diagnoses, not raw stack traces or log dumps. The developer sees what went wrong, why, and what to try next.
 
 Avoid creating abstractions until you have 3+ concrete use cases. Note that this goes against strict enforcement of the DRY principle. 
 
