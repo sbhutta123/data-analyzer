@@ -1246,12 +1246,17 @@ Manual verification: Open the app, upload a dataset, click a suggested question.
 
 **Goal:** Add interactive data cleaning with confirm-before-apply suggestions. Cleaning suggestions appear after upload, during analysis when relevant, and after cleaning actions. Each suggestion has options (e.g., "Drop rows / Fill with median"). No changes are applied without user confirmation.
 
-**Files to create/modify:**
+**Files to create/modify (actual):**
 
-- `backend/main.py` (modify — add `/api/clean` route)
-- `backend/tests/test_clean.py`
-- `frontend/src/components/CleaningPrompt.tsx` (create)
-- `frontend/src/store.ts` (modify)
+- `backend/clean.py` (create — pure cleaning functions, extracted from route handler)
+- `backend/main.py` (modify — add `/api/clean` and `/api/clean/reset` routes, `CleanRequest`/`ResetRequest` models)
+- `backend/tests/test_clean.py` (create)
+- `frontend/src/components/CleaningSuggestionCard.tsx` (create — replaces planned `CleaningPrompt.tsx`; shared by DataSummary and MessageBubble)
+- `frontend/src/components/ChatPanel.tsx` (modify — header bar with reset button)
+- `frontend/src/components/DataSummary.tsx` (modify — render upload-time cleaning suggestions)
+- `frontend/src/components/MessageBubble.tsx` (modify — render chat-time cleaning suggestions)
+- `frontend/src/store.ts` (modify — `hasAppliedCleaning`, `updateDatasetMetadata`, `CleaningSuggestion` type)
+- `frontend/src/api.ts` (modify — `applyCleaningAction()`, `resetDatasets()`)
 
 **Tests FIRST:**
 

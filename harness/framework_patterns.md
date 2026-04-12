@@ -254,6 +254,39 @@ def run_code(code: str, namespace: dict) -> ExecutionResult:
 
 ---
 
+### LLM Option Text to Deterministic Action Mapping
+
+When the LLM produces user-facing option text (e.g., cleaning suggestion buttons like "Drop rows" or "Fill with median"), the frontend must translate that free-form text into a deterministic backend action name. Use a normalized lookup table on the frontend rather than passing LLM text directly to the backend.
+
+#### ✓ Pattern: Explicit lookup table with normalization
+```typescript
+// Frontend: normalize LLM option text to backend action names
+const OPTION_TO_ACTION: Record<string, string> = {
+  "drop rows": "drop_missing_rows",
+  "drop missing rows": "drop_missing_rows",
+  "fill with median": "fill_median",
+  "drop duplicates": "drop_duplicates",
+  "remove duplicates": "drop_duplicates",
+};
+
+function resolveAction(optionText: string): string | null {
+  const normalized = optionText.toLowerCase().trim();
+  return OPTION_TO_ACTION[normalized] ?? null;
+}
+```
+
+#### ❌ Anti-Pattern: Passing LLM text directly to the backend
+```typescript
+// BAD: backend receives free-form text like "Drop the duplicate rows please"
+await fetch("/api/clean", {
+  body: JSON.stringify({ action: option }),  // LLM text as action — fragile
+});
+```
+
+**Why this matters:** The LLM may use synonyms, different casing, or slightly different phrasing each time. A normalization layer with multiple aliases per action absorbs this variance. The backend only needs to validate against a small set of known action strings (`VALID_ACTIONS`). Include common synonyms in the lookup table (e.g., both "drop duplicates" and "remove duplicates"). When a new action is added, update both the backend's `VALID_ACTIONS` and the frontend's `OPTION_TO_ACTION`.
+
+---
+
 ### Model Version Management
 
 When hardcoding LLM model identifiers in `llm.py`:

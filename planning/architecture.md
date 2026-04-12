@@ -32,7 +32,7 @@ The most technically demanding operation is sandboxed execution of arbitrary LLM
 
 ### 3.1 Module Structure
 
-Six deep modules with simple interfaces. No sub-packages, no abstract base classes.
+Seven deep modules with simple interfaces. No sub-packages, no abstract base classes.
 
 ```
 backend/
@@ -41,6 +41,7 @@ backend/
 ├── providers.py         # Supported providers, curated model catalog, validation model
 ├── llm.py               # Prompt construction, LLM API calls, response parsing
 ├── executor.py          # Sandboxed exec(), figure capture, result packaging
+├── clean.py             # Pure data cleaning functions (drop duplicates, fill median, drop missing)
 ├── exporter.py          # Jupyter notebook (.ipynb) generation
 ├── sandbox_libraries.py # Single source of truth for exec namespace libraries
 ├── requirements.txt
@@ -78,6 +79,8 @@ Key functions (Step 8):
 
 **`executor.py`** — Runs LLM-generated code via `exec()` in a restricted namespace. The namespace is pre-populated with `pandas`, `numpy`, `matplotlib`, `seaborn`, `sklearn`, and `dfs` — a dict of all session DataFrames keyed by name. Captures matplotlib figures as base64 PNG by hooking `plt.savefig()` to a bytes buffer. Captures printed output and expression results. Returns a structured result object with `stdout`, `figures` (list of base64 strings), `error` (if any), and `dataframe_changed` flag.
 
+**`clean.py`** — Pure data cleaning functions with no I/O or session state. Each cleaning action (`drop_duplicates`, `fill_median`, `drop_missing_rows`) is a pure function that takes a DataFrame (and optional column name) and returns a new DataFrame. `apply_cleaning_action()` dispatches to the correct handler based on an action string. The route handler in `main.py` owns session lookup and response building; `clean.py` owns only the DataFrame transformations. Valid actions are enumerated in `VALID_ACTIONS` (a `frozenset`).
+
 **`exporter.py`** — Builds a Jupyter notebook (`.ipynb` JSON) from the session's code history. Each entry becomes a code cell + a markdown cell (for the explanation). Adds a header cell with import statements and a cell that loads the dataset. The exported notebook is self-contained and runnable.
 
 ### 3.3 Request Flow
@@ -100,11 +103,18 @@ Key functions (Step 8):
 5. `llm.py` generates the initial summary, suggested questions, and initial cleaning suggestions (Step 7)
 6. Response returned as JSON with `session_id` and `datasets` metadata per DataFrame
 
-**Data cleaning confirmation (REST):**
-1. Frontend POSTs the user's cleaning decision (e.g., "drop duplicates")
-2. `executor.py` runs the cleaning code on the session's dataframe
-3. `llm.py` re-evaluates data quality and returns any follow-up cleaning suggestions
-4. Updated stats + any new suggestions returned as JSON
+**Data cleaning — apply action (REST, POST `/api/clean`):**
+1. Frontend POSTs `session_id`, `action`, optional `column`, and optional `dataset_name`
+2. `main.py` validates the session and action, resolves the target dataset (defaults to the first DataFrame when `dataset_name` is omitted)
+3. `clean.py` applies the pure cleaning function on the working DataFrame copy
+4. The working copy in the session is replaced; the original (in `dataframes_original`) is preserved for reset
+5. Updated dataset metadata (row_count, column_count, columns, dtypes, missing_values) returned as JSON
+
+**Data cleaning — reset (REST, POST `/api/clean/reset`):**
+1. Frontend POSTs `session_id`
+2. All working DataFrames are restored from `dataframes_original` (independent copies)
+3. The exec namespace's `dfs` reference is updated to point to the restored copies
+4. Updated metadata for all datasets returned as JSON
 
 **Export (REST):**
 1. Frontend requests notebook download
@@ -127,7 +137,7 @@ frontend/
 │   │   ├── ChatPanel.tsx     # Message list + input
 │   │   ├── MessageBubble.tsx # Single message (explanation, code toggle, charts)
 │   │   ├── DataSummary.tsx   # Initial summary display
-│   │   ├── CleaningPrompt.tsx# Confirmation UI for cleaning suggestions
+│   │   ├── CleaningSuggestionCard.tsx # Single cleaning suggestion card (shared by DataSummary + MessageBubble)
 │   │   └── HelpModal.tsx     # Help overlay
 │   └── main.tsx
 ├── package.json
@@ -148,6 +158,7 @@ interface AppState {
   isStreaming: boolean
   datasetInfo: DatasetInfo | null
   currentScreen: 'setup' | 'upload' | 'chat'
+  hasAppliedCleaning: boolean  // true after any cleaning action; controls reset button visibility
 }
 ```
 
@@ -156,7 +167,7 @@ interface AppState {
 - **Streaming:** SSE connection reads tokens as they arrive, appends to the current assistant message in the store. A final event delivers execution results (figures, tables).
 - **Code toggle:** Each assistant message stores the generated code. Hidden by default, shown via a "Show code" button. Rendered with syntax highlighting.
 - **Suggested questions:** Displayed as clickable chips after the initial summary. Clicking one sends it as a chat message.
-- **Cleaning confirmations:** Rendered as interactive cards with buttons for each option (e.g., "Drop duplicates" / "Keep them").
+- **Cleaning suggestions:** Rendered via `CleaningSuggestionCard` — a shared component used in both `DataSummary` (upload-time suggestions) and `MessageBubble` (chat-time suggestions). Each card shows a description and option buttons. On click, the card maps the LLM's option text to a backend action name via `OPTION_TO_ACTION`, calls `/api/clean`, and transitions to a success/error state. A header bar in `ChatPanel` shows a "Reset to original" button when `hasAppliedCleaning` is true — this bar pattern will be shared with Step 14 (Export).
 - **Charts:** Rendered as `<img>` tags from base64 PNG data.
 
 ## 5. Communication Protocol
@@ -168,6 +179,7 @@ interface AppState {
 | Upload dataset | POST | `/api/upload` | multipart/form-data → JSON |
 | Chat question | POST | `/api/chat` | JSON → SSE stream |
 | Apply cleaning action | POST | `/api/clean` | JSON |
+| Reset to original data | POST | `/api/clean/reset` | JSON |
 | Export notebook | GET | `/api/export/{session_id}` | `.ipynb` file download |
 
 SSE event types for the chat stream:
@@ -222,7 +234,7 @@ Conversation history is sent as prior messages to maintain context.
 | 7 | LLM response structure | Structured JSON (`{code, explanation}`) |
 | 8 | Chart rendering | Server-side matplotlib/seaborn → base64 PNG |
 | 9 | Repo structure | Monorepo with `frontend/` and `backend/` |
-| 10 | Backend module design | 6 deep modules: main, session, providers, llm, executor, exporter + sandbox_libraries |
+| 10 | Backend module design | 7 deep modules: main, session, providers, llm, executor, clean, exporter + sandbox_libraries |
 | 14 | LLM provider support | OpenAI and Anthropic (both built in from Step 6; not deferred) |
 | 15 | Model selection | Curated 3-tier catalog per provider (Frontier/Balanced/Fast); served via `GET /api/models`; `providers.py` is single source of truth |
 | 11 | Frontend state | Zustand |
