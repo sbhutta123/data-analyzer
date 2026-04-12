@@ -484,6 +484,11 @@ def generate_summary(
 
 # ── Guided ML workflow (PRD #5) ─────────────────────────────────────────────
 
+# Problem type identifiers returned by infer_problem_type and used for
+# branching in prompt builders and training code generation.
+PROBLEM_TYPE_CLASSIFICATION = "classification"
+PROBLEM_TYPE_REGRESSION = "regression"
+
 # Threshold for distinguishing classification from regression on numeric columns.
 # Numeric columns with this many or fewer unique values are treated as classification
 # (covers binary labels like 0/1 and small ordinal categories like 1-5 ratings).
@@ -511,13 +516,13 @@ def infer_problem_type(df, target_column: str) -> str:
     col = df[target_column]
 
     if col.dtype == "object" or col.dtype == "bool":
-        return "classification"
+        return PROBLEM_TYPE_CLASSIFICATION
 
     unique_count = col.nunique()
     if unique_count <= CLASSIFICATION_UNIQUE_VALUE_THRESHOLD:
-        return "classification"
+        return PROBLEM_TYPE_CLASSIFICATION
 
-    return "regression"
+    return PROBLEM_TYPE_REGRESSION
 
 
 def build_target_selection_prompt(df) -> str:
@@ -603,7 +608,8 @@ def build_feature_selection_prompt(df, target_column: str, problem_type: str) ->
             + missing_info + ")"
         )
 
-    # Include correlations with the target for numeric columns
+    # Include correlations with the target for numeric columns so the LLM can
+    # recommend features with strong linear relationships and flag multicollinearity.
     numeric_cols = [
         str(col) for col in df.columns
         if str(col) != str(target_column) and df[col].dtype.kind in ("i", "f")
@@ -615,8 +621,10 @@ def build_feature_selection_prompt(df, target_column: str, problem_type: str) ->
             try:
                 corr_val = df[col].corr(df[target_column])
                 lines.append("  " + col + ": " + str(round(corr_val, 4)))
-            except Exception:
-                pass
+            except (ValueError, TypeError) as exc:
+                # Correlation can fail for constant columns or incompatible dtypes
+                # after type coercion. Log and skip rather than crashing the prompt.
+                logger.debug("Skipping correlation for column '%s': %s", col, exc)
 
     lines.append("")
     lines.append(_build_library_section())
@@ -754,7 +762,7 @@ def build_training_prompt(
         "- Print evaluation metrics:",
     ]
 
-    if problem_type == "classification":
+    if problem_type == PROBLEM_TYPE_CLASSIFICATION:
         lines.append("  - accuracy, precision, recall, F1-score")
         lines.append("  - confusion matrix")
     else:

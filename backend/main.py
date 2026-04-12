@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from executor import execute_code
 from llm import (
     ML_STAGES,
+    PROBLEM_TYPE_CLASSIFICATION,
     build_chat_messages,
     build_chat_system_prompt,
     build_explanation_prompt,
@@ -465,14 +466,9 @@ def chat(request: ChatRequest):
         session.conversation_history.append({
             "role": "assistant", "content": parsed["explanation"],
         })
-        session.code_history.append({
-            "code": parsed.get("code", ""),
-            "explanation": parsed["explanation"],
-            "result": {
-                "stdout": exec_result["stdout"] if exec_result else "",
-                "figures": exec_result["figures"] if exec_result else [],
-            },
-        })
+        _append_to_code_history(
+            session, parsed["explanation"], parsed.get("code", ""), exec_result,
+        )
 
         yield _sse_event("done", "")
 
@@ -482,6 +478,24 @@ def chat(request: ChatRequest):
 def _sse_event(event_type: str, data: str) -> str:
     """Format a single SSE event string with the standard event + data fields."""
     return "event: " + event_type + "\ndata: " + data + "\n\n"
+
+
+def _append_to_code_history(
+    session, explanation: str, code: str, exec_result: dict | None,
+) -> None:
+    """
+    Append a code-history entry to the session for notebook export.
+
+    Shared between chat and ML endpoints so the export format stays consistent.
+    """
+    session.code_history.append({
+        "code": code,
+        "explanation": explanation,
+        "result": {
+            "stdout": exec_result["stdout"] if exec_result else "",
+            "figures": exec_result["figures"] if exec_result else [],
+        },
+    })
 
 
 # ── Guided ML endpoint (Step 12) ───────────────────────────────────────────
@@ -572,7 +586,7 @@ def _get_first_dataframe(session) -> tuple:
     return name, session.dataframes[name]
 
 
-def _build_ml_prompt(session, stage: str, user_input: str, df_name: str, df) -> str:
+def _build_ml_prompt(session, stage: str, user_input: str, df) -> str:
     """
     Route to the appropriate prompt builder based on the ML stage.
 
@@ -593,7 +607,7 @@ def _build_ml_prompt(session, stage: str, user_input: str, df_name: str, df) -> 
         return build_preprocessing_prompt(df, session.ml_target_column, session.ml_features)
 
     if stage == "model":
-        problem_type = session.ml_problem_type or "classification"
+        problem_type = session.ml_problem_type or PROBLEM_TYPE_CLASSIFICATION
         return build_model_selection_prompt(problem_type, df.shape)
 
     if stage == "training":
@@ -691,13 +705,13 @@ def ml_step(request: MlStepRequest):
         )
 
     def event_generator():
-        df_name, df = _get_first_dataframe(session)
+        _df_name, df = _get_first_dataframe(session)
 
         # Reset state for stages after the requested stage when restarting
         _reset_ml_state_from_stage(session, request.stage)
 
         system_prompt = _build_ml_prompt(
-            session, request.stage, request.user_input, df_name, df,
+            session, request.stage, request.user_input, df,
         )
         messages = [{"role": "user", "content": request.user_input}]
 
@@ -762,15 +776,9 @@ def ml_step(request: MlStepRequest):
             "content": parsed.get("explanation", ""),
         })
 
-        # Append to code_history for notebook export (same pattern as /api/chat)
-        session.code_history.append({
-            "code": parsed.get("code", ""),
-            "explanation": parsed["explanation"],
-            "result": {
-                "stdout": exec_result["stdout"] if exec_result else "",
-                "figures": exec_result["figures"] if exec_result else [],
-            },
-        })
+        _append_to_code_history(
+            session, parsed["explanation"], parsed.get("code", ""), exec_result,
+        )
 
         yield _sse_event("done", "")
 
