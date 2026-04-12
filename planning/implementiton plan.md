@@ -29,7 +29,7 @@
 | 11 | Error recovery | Vertical | Medium | 9 | #6 Error recovery | ✅ Done |
 | 12 | Guided ML backend | Vertical | High | 8 | #5 Guided ML | ✅ Done |
 | 13 | Guided ML frontend | Vertical | Medium | 12, 9 | #5 Guided ML | |
-| 14 | Export | Vertical | Medium | 9 | #7 Export | |
+| 14 | Export | Vertical | Medium | 9 | #7 Export | ✅ Done |
 | 15 | Help | Vertical | Low | 5 | #9 Help | ✅ Done |
 
 ---
