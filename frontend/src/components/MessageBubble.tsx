@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import type { Message } from "../store";
+import { CleaningSuggestionCard } from "./CleaningSuggestionCard";
 
 interface MessageBubbleProps {
   message: Message;
@@ -45,6 +46,7 @@ function AssistantBubble({ message }: { message: Message }) {
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const hasFigures = message.figures && message.figures.length > 0;
   const hasCode = !!message.code;
+  const hasCleaningSuggestions = message.cleaningSuggestions && message.cleaningSuggestions.length > 0;
 
   return (
     <div
@@ -144,6 +146,14 @@ function AssistantBubble({ message }: { message: Message }) {
             }}
           />
         ))}
+
+      {hasCleaningSuggestions && (
+        <div style={{ marginTop: 12 }}>
+          {message.cleaningSuggestions!.map((suggestion, idx) => (
+            <CleaningSuggestionCard key={idx} suggestion={suggestion} />
+          ))}
+        </div>
+      )}
 
       {hasCode && (
         <div style={{ marginTop: 4 }}>

@@ -21,6 +21,7 @@ import type { DatasetInfo } from "../../store";
 vi.mock("../../api", () => ({
   sendChatMessage: vi.fn().mockResolvedValue(undefined),
   exportNotebook: vi.fn().mockResolvedValue(undefined),
+  resetDatasets: vi.fn().mockResolvedValue({ datasets: {} }),
 }));
 
 const TEST_DATASET_INFO: DatasetInfo = {
@@ -46,6 +47,7 @@ function resetStore() {
     isStreaming: false,
     datasetInfo: TEST_DATASET_INFO,
     sessionId: "test-session",
+    hasAppliedCleaning: false,
   });
 }
 

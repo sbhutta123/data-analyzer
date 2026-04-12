@@ -8,14 +8,68 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
-import { sendChatMessage, exportNotebook } from "../api";
+import { sendChatMessage, exportNotebook, resetDatasets } from "../api";
 import { DataSummary } from "./DataSummary";
 import { MessageBubble } from "./MessageBubble";
+
+function ResetButton() {
+  const sessionId = useStore((s) => s.sessionId);
+  const setDatasetInfo = useStore((s) => s.setDatasetInfo);
+  const datasetInfo = useStore((s) => s.datasetInfo);
+  const setHasAppliedCleaning = useStore((s) => s.setHasAppliedCleaning);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  async function handleReset() {
+    if (!sessionId || !datasetInfo || isResetting) return;
+    setIsResetting(true);
+    setResetError(null);
+    try {
+      const result = await resetDatasets(sessionId);
+      setDatasetInfo({
+        ...datasetInfo,
+        datasets: result.datasets,
+      });
+      setHasAppliedCleaning(false);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Reset failed. Please try again.";
+      setResetError(message);
+    } finally {
+      setIsResetting(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {resetError && (
+        <span style={{ fontSize: 13, color: "#991b1b" }}>{resetError}</span>
+      )}
+      <button
+        type="button"
+        onClick={handleReset}
+        disabled={isResetting}
+        style={{
+          padding: "6px 14px",
+          fontSize: 13,
+          fontWeight: 500,
+          background: "#fff",
+          border: "1px solid #d1d5db",
+          borderRadius: 5,
+          cursor: isResetting ? "not-allowed" : "pointer",
+          color: "#374151",
+        }}
+      >
+        {isResetting ? "Resetting..." : "Reset to original"}
+      </button>
+    </div>
+  );
+}
 
 export function ChatPanel() {
   const messages = useStore((s) => s.messages);
   const isStreaming = useStore((s) => s.isStreaming);
   const sessionId = useStore((s) => s.sessionId);
+  const hasAppliedCleaning = useStore((s) => s.hasAppliedCleaning);
 
   const [inputValue, setInputValue] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,17 +103,19 @@ export function ChatPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      {/* Header bar with export button */}
+      {/* Header bar with export and reset buttons */}
       <div
         style={{
           display: "flex",
           justifyContent: "flex-end",
           alignItems: "center",
+          gap: 8,
           padding: "8px 24px",
           borderBottom: "1px solid #e5e7eb",
           background: "#f9fafb",
         }}
       >
+        {hasAppliedCleaning && <ResetButton />}
         <button
           type="button"
           onClick={handleExport}
