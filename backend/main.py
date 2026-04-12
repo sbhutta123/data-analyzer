@@ -13,16 +13,25 @@
 #   Step 14: /api/export   — notebook export
 
 import io
+import json
 import logging
 import pathlib
 
 import pandas as pd
 from fastapi import FastAPI, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from llm import generate_summary
+from executor import execute_code
+from llm import (
+    build_chat_messages,
+    build_chat_system_prompt,
+    call_llm_chat,
+    generate_summary,
+    parse_chat_response,
+    truncate_history,
+)
 from providers import ANTHROPIC_VALIDATION_MODEL, AVAILABLE_MODELS, ProviderLiteral
 from session import SessionStore
 
@@ -36,6 +45,11 @@ FRONTEND_DEV_ORIGIN = "http://localhost:5173"
 ALLOWED_UPLOAD_EXTENSIONS = (".csv", ".xlsx", ".xls")
 
 MAX_UPLOAD_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Token budget for conversation history truncation. 8000 tokens leaves ~4000
+# tokens of headroom for the system prompt + LLM response within a typical
+# 16k-token context window.
+CONVERSATION_HISTORY_MAX_TOKENS = 8000
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -165,6 +179,11 @@ def validate_anthropic_key(api_key: str) -> bool:
 class ValidateKeyRequest(BaseModel):
     api_key: str
     provider: ProviderLiteral
+
+
+class ChatRequest(BaseModel):
+    session_id: str
+    question: str
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -333,3 +352,118 @@ def upload_file(
         response_content["summary"] = summary
 
     return JSONResponse(status_code=200, content=response_content)
+
+
+# ── Chat endpoint (Step 8) ───────────────────────────────────────────────────
+
+
+@app.post("/api/chat")
+def chat(request: ChatRequest):
+    """
+    SSE-streaming Q&A endpoint. Takes a user question and session ID, builds a
+    prompt with dataset context and conversation history, calls the LLM, executes
+    the generated code, and streams back explanation + execution results.
+
+    SSE event types:
+      explanation          — LLM's explanation text
+      result               — execution output (stdout, figures) as JSON
+      cleaning_suggestions — array of data quality suggestions as JSON
+      error                — error message if LLM parse or code execution fails
+      done                 — signals end of stream
+
+    PRD ref: #3 (Conversational Q&A)
+    Architecture ref: "Chat question (SSE)" in planning/architecture.md §3.3
+    Tests: backend/tests/test_chat.py
+    """
+    session = session_store.get(request.session_id)
+    if session is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "session_not_found",
+                "detail": "Session not found or has expired.",
+            },
+        )
+
+    if not request.question.strip():
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "empty_question",
+                "detail": "Question cannot be empty.",
+            },
+        )
+
+    def event_generator():
+        system_prompt = build_chat_system_prompt(session.dataframes)
+        truncated = truncate_history(
+            session.conversation_history, max_tokens=CONVERSATION_HISTORY_MAX_TOKENS,
+        )
+        messages = build_chat_messages(request.question, truncated)
+
+        logger.info(
+            "Chat request: session=%s question_length=%d history_messages=%d",
+            request.session_id, len(request.question), len(truncated),
+        )
+
+        try:
+            raw_response = call_llm_chat(
+                system_prompt, messages, session.api_key, session.provider, session.model,
+            )
+        except Exception as exc:
+            logger.error("LLM call failed during chat: %s", exc)
+            yield _sse_event("error", "LLM call failed: " + str(exc))
+            yield _sse_event("done", "")
+            return
+
+        parsed = parse_chat_response(raw_response)
+
+        if "error" in parsed:
+            yield _sse_event("error", parsed["error"])
+            yield _sse_event("done", "")
+            return
+
+        yield _sse_event("explanation", parsed["explanation"])
+
+        exec_result: dict | None = None
+        if parsed.get("code"):
+            exec_result = execute_code(parsed["code"], session.exec_namespace)
+
+            if exec_result["error"]:
+                yield _sse_event("error", exec_result["error"])
+            else:
+                result_payload = json.dumps({
+                    "stdout": exec_result["stdout"],
+                    "figures": exec_result["figures"],
+                })
+                yield _sse_event("result", result_payload)
+
+        if parsed.get("cleaning_suggestions"):
+            yield _sse_event(
+                "cleaning_suggestions",
+                json.dumps(parsed["cleaning_suggestions"]),
+            )
+
+        session.conversation_history.append({
+            "role": "user", "content": request.question,
+        })
+        session.conversation_history.append({
+            "role": "assistant", "content": parsed["explanation"],
+        })
+        session.code_history.append({
+            "code": parsed.get("code", ""),
+            "explanation": parsed["explanation"],
+            "result": {
+                "stdout": exec_result["stdout"] if exec_result else "",
+                "figures": exec_result["figures"] if exec_result else [],
+            },
+        })
+
+        yield _sse_event("done", "")
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _sse_event(event_type: str, data: str) -> str:
+    """Format a single SSE event string with the standard event + data fields."""
+    return "event: " + event_type + "\ndata: " + data + "\n\n"

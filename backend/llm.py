@@ -148,7 +148,153 @@ def build_summary_prompt(dataframes: dict) -> str:
     return "\n".join(sections)
 
 
-# ── Response parsing ─────────────────────────────────────────────────────────
+# ── Chat prompt construction ─────────────────────────────────────────────────
+
+_CHAT_RESPONSE_FORMAT_INSTRUCTIONS = """
+Respond with a JSON object containing exactly these fields:
+{
+  "code": "<Python code to execute for this analysis>",
+  "explanation": "<A clear, beginner-friendly explanation of what the code does and what the results mean>",
+  "cleaning_suggestions": [
+    {
+      "description": "A data quality issue relevant to this analysis",
+      "options": ["Option A to fix it", "Option B to fix it"]
+    }
+  ]
+}
+
+Rules:
+- Return ONLY the JSON object, no other text.
+- The "code" field must contain valid Python that can be executed in the sandbox.
+- Access DataFrames using dfs["<name>"] (e.g., dfs["sales"], dfs["costs"]).
+- cleaning_suggestions may be an empty array if no issues are found.
+- Each cleaning suggestion must include at least 2 actionable options.
+- If the question cannot be answered with the available data, explain why in the
+  explanation field and provide an empty string for code.
+""".strip()
+
+
+def build_chat_system_prompt(dataframes: dict) -> str:
+    """
+    Construct the system prompt for chat Q&A from a dict of named DataFrames.
+
+    Includes: role definition, dataset metadata (columns, dtypes, shape, sample rows,
+    missing values), available sandbox libraries, and response format instructions.
+
+    Reuses _build_dataset_section and _build_library_section from the summary flow.
+    Uses string concatenation — not str.format() — so column names containing
+    curly braces don't cause KeyError (framework_patterns.md).
+
+    Failure modes: none — always returns a non-empty string.
+    """
+    sections = [
+        "You are a data analysis assistant helping junior data scientists "
+        "explore and analyze their datasets.",
+        "When the user asks a question, generate Python code to answer it "
+        "and provide a clear explanation.",
+        "",
+    ]
+
+    for name, df in dataframes.items():
+        sections.append(_build_dataset_section(name, df))
+        sections.append("")
+
+    sections.append(_build_library_section())
+    sections.append("")
+    sections.append(_CHAT_RESPONSE_FORMAT_INSTRUCTIONS)
+
+    return "\n".join(sections)
+
+
+def build_chat_messages(question: str, conversation_history: list) -> list:
+    """
+    Build the messages array for a chat LLM call.
+
+    Appends the new user question to the conversation history.
+    The system prompt is handled separately (not in this array) because
+    OpenAI and Anthropic pass it differently — see call_llm_chat.
+
+    Returns a new list — does not modify the input history.
+
+    Failure modes: none — always returns a non-empty list.
+    """
+    messages = list(conversation_history)
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def parse_chat_response(raw: str) -> dict:
+    """
+    Parse an LLM chat response into a structured dict.
+
+    Strips code fences before parsing (LLMs wrap JSON non-deterministically).
+    Returns a dict with code, explanation, and cleaning_suggestions.
+    Missing optional fields default to safe values.
+    Malformed JSON returns {"error": "<message>"}.
+
+    Failure modes:
+    - Malformed JSON → returns {"error": ...} instead of raising
+    - Missing fields → safe defaults via .get()
+    """
+    cleaned = strip_code_fences(raw)
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to parse LLM chat response as JSON: %s", exc)
+        return {"error": "Invalid JSON in LLM response: " + str(exc)}
+
+    return {
+        "code": parsed.get("code", ""),
+        "explanation": parsed.get("explanation", ""),
+        "cleaning_suggestions": parsed.get("cleaning_suggestions", []),
+    }
+
+
+# ── History truncation ───────────────────────────────────────────────────────
+
+# Approximate token estimation: word_count * 1.3
+# REVIEW: if this causes premature truncation or token overflows, switch to tiktoken.
+TOKENS_PER_WORD_ESTIMATE = 1.3
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate the token count of a string using word count * 1.3."""
+    word_count = len(text.split())
+    return int(word_count * TOKENS_PER_WORD_ESTIMATE)
+
+
+def truncate_history(history: list, max_tokens: int) -> list:
+    """
+    Sliding-window truncation that drops oldest messages when the total
+    estimated token count exceeds max_tokens.
+
+    Scans from newest to oldest, accumulating messages until the budget
+    is exhausted. Always preserves the most recent message — even if it
+    alone exceeds max_tokens.
+
+    Returns a new list; does not modify the input.
+
+    Failure modes: none — empty list returns empty list.
+    """
+    if not history:
+        return []
+
+    result = [history[-1]]
+    remaining_tokens = max_tokens - _estimate_tokens(history[-1].get("content", ""))
+
+    for message in reversed(history[:-1]):
+        message_tokens = _estimate_tokens(message.get("content", ""))
+        if message_tokens <= remaining_tokens:
+            result.insert(0, message)
+            remaining_tokens -= message_tokens
+        else:
+            break
+
+    return result
+
+
+# ── Summary response parsing ─────────────────────────────────────────────────
 
 def parse_summary_response(raw: str) -> dict:
     """
@@ -230,7 +376,76 @@ def _call_anthropic(prompt: str, api_key: str, model: str) -> str:
     return response.content[0].text
 
 
-# ── Orchestrator ──────────────────────────────────────────────────────────────
+# ── Chat LLM call ────────────────────────────────────────────────────────────
+
+# Same low temperature as summaries — we want factual analysis code, not creative.
+LLM_CHAT_TEMPERATURE = 0.3
+
+# Anthropic requires explicit max_tokens. 4096 gives room for complex code +
+# detailed explanation + cleaning suggestions.
+LLM_CHAT_MAX_TOKENS = 4096
+
+
+def call_llm_chat(
+    system_prompt: str,
+    messages: list,
+    api_key: str,
+    provider: str,
+    model: str,
+) -> str:
+    """
+    Send a multi-turn chat request to the LLM and return the raw response text.
+
+    Dispatches to OpenAI or Anthropic SDK based on provider.
+    Handles the system prompt differently per provider:
+    - OpenAI: system prompt is the first message with role "system"
+    - Anthropic: system prompt is a separate `system` parameter
+
+    SDKs are imported at call time — see call_llm for rationale.
+
+    Failure modes:
+    - AuthenticationError → propagates (key was validated at BYOK step)
+    - RateLimitError, network errors → propagate to caller for handling
+    """
+    if provider == "anthropic":
+        return _call_anthropic_chat(system_prompt, messages, api_key, model)
+    return _call_openai_chat(system_prompt, messages, api_key, model)
+
+
+def _call_openai_chat(
+    system_prompt: str, messages: list, api_key: str, model: str,
+) -> str:
+    """Call OpenAI Chat Completions API with system prompt and message history."""
+    import openai
+
+    client = openai.OpenAI(api_key=api_key)
+    full_messages = [{"role": "system", "content": system_prompt}] + messages
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=full_messages,
+        temperature=LLM_CHAT_TEMPERATURE,
+    )
+    return response.choices[0].message.content or ""
+
+
+def _call_anthropic_chat(
+    system_prompt: str, messages: list, api_key: str, model: str,
+) -> str:
+    """Call Anthropic Messages API with system prompt and message history."""
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=model,
+        max_tokens=LLM_CHAT_MAX_TOKENS,
+        system=system_prompt,
+        messages=messages,
+    )
+    return response.content[0].text
+
+
+# ── Summary orchestrator ─────────────────────────────────────────────────────
 
 def generate_summary(
     dataframes: dict,

@@ -67,7 +67,14 @@ For CSV uploads, `dataframes` contains a single entry keyed by the filename stem
 
 Sessions are created on file upload and discarded on explicit close or server restart. No persistence.
 
-**`llm.py`** — Constructs prompts that include dataset metadata (column names, dtypes, shape, sample rows) and conversation history. Sends requests to the LLM API. Parses the structured JSON response into a typed object with `code`, `explanation`, and optional `cleaning_suggestions` fields. The system prompt instructs the LLM to proactively surface data quality issues relevant to the current question. Handles the auto-retry flow: on code execution failure, re-prompts the LLM with the error context.
+**`llm.py`** — Constructs prompts that include dataset metadata (column names, dtypes, shape, sample rows) and conversation history. Sends requests to the LLM API. Parses the structured JSON response into a typed object with `code`, `explanation`, and optional `cleaning_suggestions` fields. The system prompt instructs the LLM to proactively surface data quality issues relevant to the current question.
+
+Key functions (Step 8):
+- `build_chat_system_prompt(dataframes)` — builds the chat system prompt with dataset metadata, libraries, and response format instructions
+- `build_chat_messages(question, conversation_history)` — builds the messages array (history + new question); system prompt is separate because OpenAI and Anthropic handle it differently
+- `parse_chat_response(raw)` — parses JSON response into `{code, explanation, cleaning_suggestions}`
+- `truncate_history(history, max_tokens)` — sliding-window truncation dropping oldest messages first; always preserves the most recent message; uses word_count * 1.3 token estimation
+- `call_llm_chat(system_prompt, messages, api_key, provider, model)` — multi-turn LLM call dispatching to provider-specific helpers that handle system prompt differences (OpenAI: system message in array; Anthropic: separate `system` parameter)
 
 **`executor.py`** — Runs LLM-generated code via `exec()` in a restricted namespace. The namespace is pre-populated with `pandas`, `numpy`, `matplotlib`, `seaborn`, `sklearn`, and `dfs` — a dict of all session DataFrames keyed by name. Captures matplotlib figures as base64 PNG by hooking `plt.savefig()` to a bytes buffer. Captures printed output and expression results. Returns a structured result object with `stdout`, `figures` (list of base64 strings), `error` (if any), and `dataframe_changed` flag.
 
