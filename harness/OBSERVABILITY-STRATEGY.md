@@ -1,34 +1,39 @@
 # Smart Dataset Explainer — Observability Strategy
 
-How we understand what the system is doing at runtime. This document is prescriptive — follow these patterns when adding error handling, LLM calls, or session operations.
+How bugs get caught, diagnosed, and fixed at runtime. This document is prescriptive — follow these patterns when adding error handling, LLM calls, or session operations.
 
 ---
 
 ## Philosophy
 
-Traditional observability logs everything to persistent storage and waits for a human to investigate when something breaks. That's wasteful for a prototype:
+Tests catch bugs before deployment. But in an LLM-powered app, many bugs only surface at runtime — the model generates bad code, hallucinates column names, or produces output that's technically valid JSON but semantically wrong. No test suite can anticipate every combination of user data and natural-language question.
 
-- Most logged data is never read.
-- Persistent log infrastructure (ELK, Datadog, etc.) is YAGNI for this project.
-- A human reviewing raw logs is slower than an LLM reviewing structured context.
+**Our approach: catch bugs at runtime through two paths, and turn each one into a PR for developers.**
 
-**Our approach:** Keep a rolling context buffer in memory for each session. When an error occurs, an LLM troubleshooter agent receives that context and produces a human-readable diagnosis. No persistent storage. No infrastructure. The context lives and dies with the session.
+| Path | Trigger | Example |
+|------|---------|---------|
+| **System-detected** | An exception reaches a user-facing boundary | `KeyError: 'revenue'` — LLM-generated code references a column that doesn't exist |
+| **User-reported** | The user tells us something is wrong through the chat interface | "That chart is wrong — sales should be going up, not down" |
 
-This complements — not replaces — the test strategy. Tests verify correctness before deployment. The troubleshooter diagnoses failures at runtime.
+Both paths feed into the same troubleshooter agent, which diagnoses the issue, classifies it, and — for systemic bugs — opens a PR with a proposed fix. The user never sees the diagnosis or the code. Developers get the PR.
+
+The infrastructure that makes this possible is a lightweight **context buffer** — a per-session, in-memory rolling window of recent operations. It's plumbing, not the strategy. The strategy is: **catch bugs from both directions and convert them into actionable fixes.**
 
 ---
 
 ## Principles
 
-1. **React, don't record.** Don't log for the sake of logging. Capture context in memory so the troubleshooter has what it needs when an error occurs. If nothing goes wrong, the context is never examined and is discarded when the session ends.
+1. **Two input paths, one pipeline.** Whether the system throws an error or the user says "that's wrong," the troubleshooter receives the same structured context and produces the same structured output. Don't build two separate diagnostic systems.
 
-2. **The LLM is the reviewer.** When an error fires, hand the context buffer to a troubleshooter agent. It reads the recent operation history, the error, and the session state, then produces a plain-English diagnosis. The human sees a diagnosis, not a stack trace.
+2. **React, don't record.** Don't log for the sake of logging. The context buffer exists in memory so the troubleshooter has what it needs when something goes wrong. If nothing goes wrong, the buffer is never examined and is discarded when the session ends.
 
-3. **Session-scoped, not global.** Each session maintains its own context buffer. There is no cross-session log aggregation, no central log store, no global metrics. The unit of observability is one user's conversation.
+3. **The user reports bugs in the conversation, not a separate system.** The user is already in a chat interface. They shouldn't need to open a separate bug tracker, write an email, or screenshot an error. They just say what's wrong in the same chat. The system recognizes it and handles it.
 
-4. **Shallow buffer, not deep archive.** The buffer holds a fixed window of recent operations (not the entire session history). Older entries roll off. The goal is "what happened in the last N operations that led to this error," not "what happened since the session started."
+4. **The user sees acknowledgment, never internals.** When a bug is detected — by either path — the user gets a simple, friendly message. They never see stack traces, context buffers, diagnoses, diffs, or PRs. That's all developer-facing.
 
-5. **Instrument boundaries, not internals.** Capture context at the points where the system interacts with something non-deterministic or external: LLM calls, sandboxed code execution, file parsing. Don't instrument pure functions or internal data transformations — those are covered by tests.
+5. **Session-scoped, not global.** Each session maintains its own context buffer. No cross-session aggregation, no central log store, no persistent infrastructure. The unit of bug-catching is one user's conversation.
+
+6. **Instrument boundaries, not internals.** Capture context at the points where the system interacts with something non-deterministic or external: LLM calls, sandboxed code execution, file parsing. Don't instrument pure functions or internal data transformations — those are covered by tests.
 
 ---
 
@@ -143,11 +148,11 @@ Cleaning steps transform the working dataframe. Capture what changed so the trou
 
 ---
 
-## The Troubleshooter Agent
+## Bug-Catching Path 1: System-Detected Errors
 
 ### When it activates
 
-The troubleshooter activates when an error reaches a **user-facing boundary** — an API endpoint that would return an error response to the frontend. It does NOT activate for:
+The troubleshooter activates automatically when an error reaches a **user-facing boundary** — an API endpoint that would return an error response to the frontend. It does NOT activate for:
 
 - Handled retries (e.g., LLM call fails, retry succeeds — no need to diagnose)
 - Validation errors with obvious causes (e.g., "no file uploaded" — the user knows what happened)
@@ -295,6 +300,84 @@ Keep the diagnostic prompt simple and stable. It receives the structured `Diagno
 
 ---
 
+## Bug-Catching Path 2: User-Reported Bugs
+
+### The problem this solves
+
+Not every bug throws an exception. The LLM might generate code that runs successfully but produces a wrong chart, a misleading summary, or a nonsensical cleaning suggestion. From the system's perspective, everything worked. From the user's perspective, the output is broken.
+
+Today the user has no way to report this except to rephrase their question and hope for better. That wastes the signal — the user knows something is wrong but the system discards that knowledge.
+
+### How it works
+
+The app provides a **separate bug report chat**, distinct from the main analysis conversation. This could be a side panel, a tab, or a toggle — the exact UI is a frontend design decision. The important architectural choice is: **the bug chat is a separate conversation context that shares the same session's context buffer.**
+
+The user switches to the bug chat and describes what's wrong in natural language:
+
+- "That chart is wrong — sales should be going up, not down"
+- "This correlation doesn't make sense, those columns are unrelated"
+- "The cleaning suggestion would delete half my data"
+- "It's showing me data for the wrong column"
+
+### Why a separate chat, not intent classification
+
+Having a dedicated bug chat means every message in it is a bug report — no intent classification needed. This avoids:
+
+- **False positives:** "that doesn't look right" in the main chat being treated as a bug report when the user just wants to refine their question
+- **False negatives:** A genuine bug report being treated as a follow-up analysis question
+- **Prompt complexity:** The analysis LLM doesn't need to handle a `"bug_report"` intent category alongside its existing responsibilities
+
+The main analysis chat stays focused on analysis. The bug chat stays focused on bugs. Clean separation of concerns.
+
+### What the troubleshooter receives for user-reported bugs
+
+The same `DiagnosisRequest` structure, but populated differently:
+
+```python
+DiagnosisRequest(
+    error_type="user_reported",
+    error_message="That chart is wrong — sales should be going up, not down",
+    traceback_summary="",               # No traceback — no exception was thrown
+    context_buffer=session.context_buffer,  # Same rolling buffer
+    current_operation="user_bug_report",
+    session_summary={...},              # Same session summary as system-detected path
+)
+```
+
+The troubleshooter uses the context buffer to reconstruct what happened: what data was loaded, what the user asked, what the LLM generated, what code was executed, and what output was produced. It then compares the user's complaint against that chain to diagnose the issue.
+
+### What the user sees
+
+In the bug chat, the user gets a short acknowledgment after submitting their report:
+
+- "Thanks for flagging that. We've noted the issue and our team will look into it."
+
+The bug chat can also ask a brief clarifying question if the user's report is vague — but only one follow-up, not a back-and-forth interrogation:
+
+- "Got it. Just to make sure I understand — were you expecting the sales numbers to increase over time, or were they showing the wrong column entirely?"
+
+The acknowledgment is brief. The system doesn't explain what it diagnosed, show a ticket number, or promise a timeline. The user's job is to tell us what's wrong — the system takes it from there. The main analysis chat is unaffected and the user can continue working in it.
+
+### The same pipeline, different input
+
+After intent classification routes the message to the troubleshooter, the rest of the pipeline is identical to system-detected bugs:
+
+1. Troubleshooter receives `DiagnosisRequest` (with user's description instead of an exception)
+2. Classifies: transient / user-caused / systemic
+3. For systemic: generates diagnosis + proposed fix → opens PR
+4. User gets acknowledgment message (never the diagnosis or code)
+
+The key difference: user-reported bugs are **more likely to be systemic**. When a user says "the output is wrong," it usually means the LLM prompt or the code generation logic needs improvement — not that there was a transient API failure. The troubleshooter should weight toward `systemic` classification for user-reported bugs, but still classify as `user_caused` when the user's expectation is unreasonable given their data (e.g., "show me revenue trends" when no revenue column exists — that's guidance, not a code fix).
+
+### What NOT to include in user-reported bug handling
+
+- **A form-based bug reporter** (modal with required fields, dropdowns, severity selectors) — the chat is the interface, natural language is the format
+- **A ticketing system** — PRs are the tickets
+- **Status updates to the user** ("your bug is being worked on") — the user doesn't track bugs, developers do
+- **Multi-turn interrogation** — one clarifying question at most, then acknowledge and process. The context buffer already has the reproduction steps; the user's description adds the "what's wrong" that the system can't infer on its own
+
+---
+
 ## What NOT to Build
 
 This is a prototype. The following are explicitly out of scope:
@@ -321,7 +404,8 @@ Tests verify behavior is correct before deployment. The troubleshooter diagnoses
 
 They are complementary:
 - A test catches "LLM JSON parsing breaks when code fences are present" → fix the parser before deployment.
-- The troubleshooter catches "LLM referenced a column that doesn't exist in this specific user's dataset" → diagnoses the root cause, opens a PR with a fix (e.g., constrain the prompt to only use actual column names), and returns a friendly message to the user. The developer reviews the PR and merges if the fix is correct — closing the loop from runtime error to code improvement without the user ever seeing internals.
+- Path 1 (system-detected) catches "LLM referenced a column that doesn't exist" → diagnoses the root cause, opens a PR with a fix, returns a friendly error to the user.
+- Path 2 (user-reported) catches "The chart shows sales going down but they should be going up" → reconstructs the operation chain from the context buffer, diagnoses whether the prompt, the code generation, or the data transformation is at fault, opens a PR with a fix. The user gets "Thanks, we've noted this" — nothing more.
 
 ### Relationship to code_review_patterns.md §16 (Logging)
 
