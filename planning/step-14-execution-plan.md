@@ -109,24 +109,16 @@ Pure logic — no I/O, no side effects:
 
 ---
 
-## Open questions requiring user input
+## Resolved decisions
 
-1. **Export button placement:** The current `ChatPanel.tsx` has no header/toolbar area. Where should the "Export Notebook" button go?
-   - **Option A:** Add a thin header bar above the message scroll area (could also hold session info or a title)
-   - **Option B:** Place it next to the Send button in the input bar area
-   - **Option C:** Floating action button in the corner
-   - This will be explored in Phase A0 wireframes.
+1. **Export button placement** — Deferred to Phase A0 wireframes.
 
-2. **Should the notebook include the initial summary as a markdown cell?** The summary is generated at upload time and stored in the frontend, not in `code_history`. Including it would require either passing it to `build_notebook()` or storing it on the session.
+2. **No initial summary in notebook** — The notebook contains only the code_history entries (code cells + explanation markdown cells), not the upload-time summary.
 
-3. **Should figures be embedded in the notebook as cell outputs, or should the notebook only contain the code (which re-generates figures when run)?** Embedding makes the notebook immediately viewable without re-execution. Code-only makes the notebook smaller and truly self-contained.
+3. **Code-only, no embedded figures** — The notebook includes the code that generates figures. Figures regenerate when the notebook is run. Keeps the file small and truly self-contained.
 
-4. **Does `nbformat` need to be added to `requirements.txt`?** Based on the implementation plan, the answer is no — we build the dict manually. Confirming this is the desired approach.
+4. **Manual dict, no `nbformat` dependency** — The `.ipynb` format is simple enough to build as a plain dict. No new dependency needed.
 
-5. **Should the export endpoint return a file with a generic name (`analysis.ipynb`) or a name derived from the uploaded file (e.g., `sales_analysis.ipynb`)?** The latter requires storing the original filename on the session.
+5. **Download filename derived from uploaded file** — e.g., `sales_analysis.ipynb` from `sales.csv`. Requires storing the original filename on the session.
 
-6. **Original filename storage:** Should we add `original_filename: str` to the `Session` dataclass? This is needed for both the data-loading cell (so it references the right file) and potentially for the download filename. If yes, this adds a small modification to `session.py` and the `create()` call in `main.py`.
-
----
-
-Does this plan look good? Would you like to adjust the scope, implementation approach, or phasing before I begin?
+6. **Add `original_filename: str` to Session** — Needed for both the data-loading cell and the download filename. Small modifications to `session.py` and `main.py`'s upload route.
