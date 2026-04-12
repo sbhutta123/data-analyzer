@@ -178,40 +178,120 @@ class DiagnosisRequest:
     session_summary: dict           # Shape, columns, turn count
 ```
 
+### Error classification
+
+Not every runtime error is a code bug. The troubleshooter's first job is to classify the error before deciding what to do:
+
+| Classification | Meaning | Action |
+|---------------|---------|--------|
+| **Transient** | Temporary external failure — rate limit, network timeout, LLM refusal on one specific input | Retry or return a user-friendly message. No PR. No developer action needed. |
+| **User-caused** | The user's input or data triggered a predictable edge case — empty dataset, unsupported file format, ambiguous question | Return a helpful error message guiding the user. No PR. No developer action needed. |
+| **Systemic** | A flaw in our code that would reproduce for other users with similar inputs — bad prompt construction, missing validation, incorrect parsing logic | Diagnose, generate a fix, open a PR for developer review. |
+
+Only **systemic** errors produce a PR. The troubleshooter must include its classification and reasoning — a developer reviewing the PR should be able to see why the troubleshooter considered this a code-level bug rather than a transient or user-caused issue.
+
 ### What it produces
 
-The troubleshooter returns a **diagnosis** — a plain-English explanation aimed at the developer (not the end user). The user-facing error message remains simple ("Something went wrong, try rephrasing your question"). The diagnosis goes to the developer console / server logs for the current session only.
+The troubleshooter has two distinct outputs that go to different audiences:
+
+**1. User-facing (immediate):** A simple, friendly error message. The user never sees the diagnosis, the context buffer, stack traces, or proposed code fixes. Examples:
+- "Something went wrong analyzing your data. Try rephrasing your question."
+- "We had trouble parsing that file. Make sure it's a valid CSV or Excel file."
+
+**2. Developer-facing (PR for systemic errors):** When the troubleshooter classifies an error as systemic, it opens a pull request containing:
+
+- **PR title:** One-line summary of the bug (e.g., "Fix: LLM prompt doesn't constrain column references to actual dataset columns")
+- **PR body — Diagnosis section:**
+  - What went wrong (the error and its immediate cause)
+  - Why it happened (root cause analysis from the context buffer)
+  - Evidence (which context buffer entries support the diagnosis)
+  - Classification reasoning (why this is systemic, not transient or user-caused)
+- **PR body — Reproduction section:**
+  - The conditions that triggered the error (dataset shape, user question pattern, conversation state)
+  - How a developer could reproduce it
+- **PR diff — The proposed fix:**
+  - The actual code changes the troubleshooter believes will prevent the error class
 
 ```python
 @dataclass
 class Diagnosis:
+    classification: str     # "transient", "user_caused", or "systemic"
+    classification_reason: str  # Why this classification
     summary: str            # One sentence: what went wrong
     likely_cause: str       # One paragraph: why it probably happened
     evidence: list[str]     # Which context buffer entries support the diagnosis
-    suggested_action: str   # What to try: retry, rephrase, check data, file a bug
+    user_message: str       # Friendly message shown to the user
+    proposed_fix: ProposedFix | None  # None for transient/user-caused errors
+
+@dataclass
+class ProposedFix:
+    description: str        # Plain-English description of the fix
+    files_changed: list[str]  # Which files the fix touches
+    diff: str               # The actual code diff
+    reproduction_steps: str # How to reproduce the original error
 ```
 
-**Example diagnosis:**
-```
-summary: "LLM returned Python code that references a column 'revenue' which doesn't exist in the dataset."
+**Example — systemic error producing a PR:**
 
-likely_cause: "The user asked 'show me revenue trends' but the dataset has no 'revenue' column.
-The LLM inferred a column name from the question instead of using the actual column names
-provided in the prompt. The previous successful operation was a correlation matrix on numeric
-columns — the LLM may have lost track of the actual column names by this point in the conversation."
+```
+classification: "systemic"
+classification_reason: "The LLM prompt includes column names in the system message, but
+  does not instruct the model to ONLY use those columns. This will reproduce for any user
+  whose question mentions a concept that maps to a plausible-sounding column name."
+
+summary: "LLM generated code referencing column 'revenue' which doesn't exist in the dataset."
+
+likely_cause: "The user asked 'show me revenue trends' but the dataset columns are
+  ['date', 'sales', 'region', 'units']. The prompt provided column names but didn't
+  constrain the LLM to use only those names. The LLM inferred 'revenue' from the
+  user's question."
 
 evidence:
-  - "Context entry 18: llm_call for analysis_query — response included code referencing 'revenue'"
-  - "Context entry 15: file_parse — dataset has columns: ['date', 'sales', 'region', 'units']"
+  - "Context entry 18: llm_call for analysis_query — response code references 'revenue'"
+  - "Context entry 15: file_parse — columns: ['date', 'sales', 'region', 'units']"
 
-suggested_action: "Retry with explicit column reference. The user likely means the 'sales' column."
+user_message: "Something went wrong analyzing your data. Try rephrasing your question
+  using the exact column names from your dataset."
+
+proposed_fix:
+  description: "Add explicit constraint to analysis prompt template: instruct the model
+    to ONLY reference columns from the provided column list, and to ask the user for
+    clarification if their question doesn't map to an existing column."
+  files_changed: ["backend/llm.py"]
+  diff: "<the actual diff>"
+  reproduction_steps: "Upload a dataset with columns ['date', 'sales', 'region', 'units'].
+    Ask 'show me revenue trends'. The generated code will reference df['revenue'],
+    causing a KeyError."
+```
+
+**Example — transient error, no PR:**
+
+```
+classification: "transient"
+classification_reason: "Anthropic API returned 429 rate limit. This is an external
+  service constraint, not a code bug."
+
+summary: "LLM API call rate-limited."
+user_message: "The AI service is temporarily busy. Please try again in a moment."
+proposed_fix: None
 ```
 
 ### Implementation approach
 
-The troubleshooter is a function in `llm.py` (following the AI Logic Isolation principle from `coding_principles.md`). It makes a single LLM call with a diagnostic prompt. It is NOT a long-running agent, autonomous loop, or separate service. One error → one call → one diagnosis.
+The troubleshooter is a function in `llm.py` (following the AI Logic Isolation principle from `coding_principles.md`). It makes a single LLM call with a diagnostic prompt. It is NOT a long-running agent, autonomous loop, or separate service. One error → one diagnosis → optionally one PR.
 
-Keep the diagnostic prompt simple and stable. It receives the structured `DiagnosisRequest` and returns the structured `Diagnosis`. No tool use, no multi-turn reasoning — just pattern matching on the context buffer.
+The workflow:
+
+1. Error hits a user-facing boundary in `main.py`
+2. `main.py` calls the troubleshooter with the `DiagnosisRequest`
+3. Troubleshooter makes one LLM call, returns a `Diagnosis`
+4. `main.py` returns `diagnosis.user_message` to the user (friendly, no internals)
+5. If `diagnosis.classification == "systemic"` and `diagnosis.proposed_fix` is not None, a background task opens a PR on the project repo with the diagnosis and diff
+6. The PR is assigned to the development team for review — the fix is never auto-merged
+
+**The user never sees step 5 or 6.** From their perspective, they got a helpful error message. The PR is a developer-to-developer artifact.
+
+Keep the diagnostic prompt simple and stable. It receives the structured `DiagnosisRequest` and returns the structured `Diagnosis`. No tool use, no multi-turn reasoning — just pattern matching on the context buffer plus code generation for the fix.
 
 ---
 
@@ -226,7 +306,7 @@ This is a prototype. The following are explicitly out of scope:
 | Metrics / dashboards (Prometheus, Grafana, etc.) | Single-user prototype. Look at the console. |
 | Distributed tracing (OpenTelemetry, Jaeger, etc.) | Monolith. No services to trace between. |
 | Alerting / paging | One user, running locally. They'll see the error. |
-| Automatic retry/recovery orchestration | The troubleshooter diagnoses — it doesn't fix. Autonomic recovery is a different (and dangerous) concern. |
+| Auto-merging of troubleshooter PRs | The troubleshooter proposes fixes — a developer must review and merge. Never auto-merge generated code. |
 | Background health checks | The user is the health check. If it's broken, they'll tell you. |
 
 If the prototype graduates to production, revisit these decisions. Until then, they are YAGNI.
@@ -240,8 +320,8 @@ If the prototype graduates to production, revisit these decisions. Until then, t
 Tests verify behavior is correct before deployment. The troubleshooter diagnoses behavior that's incorrect at runtime — typically caused by non-deterministic LLM outputs or unexpected user data that tests couldn't anticipate.
 
 They are complementary:
-- A test catches "LLM JSON parsing breaks when code fences are present" → fix the parser.
-- The troubleshooter catches "LLM referenced a column that doesn't exist in this specific user's dataset" → diagnose and suggest a retry.
+- A test catches "LLM JSON parsing breaks when code fences are present" → fix the parser before deployment.
+- The troubleshooter catches "LLM referenced a column that doesn't exist in this specific user's dataset" → diagnoses the root cause, opens a PR with a fix (e.g., constrain the prompt to only use actual column names), and returns a friendly message to the user. The developer reviews the PR and merges if the fix is correct — closing the loop from runtime error to code improvement without the user ever seeing internals.
 
 ### Relationship to code_review_patterns.md §16 (Logging)
 
