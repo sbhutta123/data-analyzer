@@ -49,7 +49,7 @@ backend/
 
 ### 3.2 Module Responsibilities
 
-**`main.py`** — FastAPI application. Defines all HTTP endpoints and the SSE streaming endpoint. Wires together the other modules. Handles CORS, file upload parsing, and request validation.
+**`main.py`** — FastAPI application. Defines all HTTP endpoints and the SSE streaming endpoint. Wires together the other modules. Handles CORS, file upload parsing, and request validation. Owns the retry orchestration loop (`_attempt_chat_with_retries` / `_single_chat_attempt`) — `llm.py` builds retry prompts but `main.py` decides when to retry and how many times (`MAX_CHAT_RETRIES = 1`).
 
 **`providers.py`** — Single source of truth for LLM provider configuration. Defines `SUPPORTED_PROVIDERS`, `ProviderLiteral`, `AVAILABLE_MODELS` (a curated 3-tier catalog per provider: Frontier / Balanced / Fast), `get_default_model()`, and `ANTHROPIC_VALIDATION_MODEL`. The frontend fetches model data via `GET /api/models` rather than hardcoding it.
 
@@ -86,11 +86,13 @@ Key functions (Step 8):
 1. Frontend sends user question + session ID via POST
 2. `main.py` looks up session in `session.py`
 3. `llm.py` constructs prompt with dataset context + conversation history, calls LLM API
-4. Response streams to frontend via SSE (explanation text)
-5. `executor.py` runs the generated code in the session's namespace
-6. Execution results (figures, tables, stdout) sent as a final SSE event
-7. If the LLM response includes `cleaning_suggestions`, these are sent as a separate SSE event for the frontend to render as interactive cards
-8. Session's conversation history and code history updated
+4. `executor.py` runs the generated code in the session's namespace
+5. **If any step fails** (LLM API error, JSON parse error, execution error, or timeout), `main.py` retries once via `_attempt_chat_with_retries`: `llm.py`'s `build_retry_messages` constructs a new prompt including the failed code and error traceback, then `_single_chat_attempt` runs the full cycle again. Timeout errors include extra guidance asking the LLM to generate simpler code.
+6. Response streams to frontend via SSE (explanation text)
+7. Execution results (figures, tables, stdout) sent as a final SSE event
+8. If the LLM response includes `cleaning_suggestions`, these are sent as a separate SSE event for the frontend to render as interactive cards
+9. Session's conversation history and code history updated with the **final outcome only** — intermediate failures are not recorded, keeping history clean for future LLM context
+10. If all attempts fail, the frontend shows a friendly error message with a collapsible "Show details" toggle for the raw error
 
 **File upload (REST):**
 1. Frontend POSTs file (CSV/Excel)
@@ -158,6 +160,7 @@ interface AppState {
 - **Suggested questions:** Displayed as clickable chips after the initial summary. Clicking one sends it as a chat message.
 - **Cleaning confirmations:** Rendered as interactive cards with buttons for each option (e.g., "Drop duplicates" / "Keep them").
 - **Charts:** Rendered as `<img>` tags from base64 PNG data.
+- **Error display:** Error messages show a friendly wrapper ("I couldn't execute the analysis. Try rephrasing your question or being more specific.") with a collapsible "Show details" toggle that reveals the raw error — mirroring the "Show code" toggle pattern used for generated code.
 
 ## 5. Communication Protocol
 
@@ -201,7 +204,7 @@ The system prompt includes:
 
 Conversation history is sent as prior messages to maintain context.
 
-**Error retry flow:** if `executor.py` returns an error, `llm.py` appends an error message to the conversation (including the traceback) and re-prompts the LLM once. If the retry also fails, the error is returned to the user with a suggestion to rephrase.
+**Error retry flow:** All error types are retryable — LLM API errors, JSON parse failures, execution errors, and timeouts. Retry orchestration lives in `main.py` (`_attempt_chat_with_retries`), not `llm.py`. On failure, `llm.py`'s pure function `build_retry_messages` constructs a new messages array containing the conversation history plus a user message with the original question, failed code, and error traceback. For timeout errors, `TIMEOUT_RETRY_GUIDANCE` is appended asking the LLM to generate simpler, faster code. `main.py` re-runs the full LLM-call-parse-execute cycle up to `MAX_CHAT_RETRIES` (1) times. If all attempts fail, the error is returned to the user. Conversation history records only the final successful outcome — intermediate failures are never appended.
 
 ## 8. Observability
 
@@ -228,3 +231,4 @@ Conversation history is sent as prior messages to maintain context.
 | 11 | Frontend state | Zustand |
 | 12 | Testing | pytest + Vitest |
 | 13 | Logging | Python `logging`, structured, human-readable |
+| 16 | Error retry orchestration | Retry loop in `main.py`, pure retry-prompt builder in `llm.py`; all error types retryable; conversation history records only final outcomes |
