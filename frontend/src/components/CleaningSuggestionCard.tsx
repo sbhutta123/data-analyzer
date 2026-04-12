@@ -47,6 +47,7 @@ export function CleaningSuggestionCard({ suggestion }: CleaningSuggestionCardPro
   const [message, setMessage] = useState<string>("");
   const sessionId = useStore((s) => s.sessionId);
   const updateDatasetMetadata = useStore((s) => s.updateDatasetMetadata);
+  const setHasAppliedCleaning = useStore((s) => s.setHasAppliedCleaning);
 
   async function handleOptionClick(option: string) {
     if (!sessionId || status === "loading") return;
@@ -68,6 +69,7 @@ export function CleaningSuggestionCard({ suggestion }: CleaningSuggestionCardPro
       const result = await applyCleaningAction(sessionId, action, column ?? undefined, datasetName);
       setStatus("success");
       setMessage(result.message);
+      setHasAppliedCleaning(true);
 
       // Update the store with the new metadata for the affected dataset.
       const targetName = datasetName ?? Object.keys(useStore.getState().datasetInfo?.datasets ?? {})[0];

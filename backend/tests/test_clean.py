@@ -354,3 +354,114 @@ def test_reset_endpoint_returns_404_for_unknown_session():
         "session_id": "nonexistent-session",
     })
     assert response.status_code == 404
+
+
+# ── Edge case tests ──────────────────────────────────────────────────────────
+
+
+def test_fill_median_on_all_nan_column():
+    # Edge case: fill_median on a column that is ALL NaN should not crash.
+    # The median of an all-NaN column is NaN, so filling with NaN is a no-op.
+    df = pd.DataFrame({"val": [float("nan"), float("nan"), float("nan")]})
+    result = fill_median(df, "val")
+    assert len(result) == 3
+    assert result["val"].isnull().all()
+
+
+def test_cleaning_functions_on_empty_dataframe():
+    # Edge case: cleaning functions on a DataFrame with zero rows should not crash.
+    df = pd.DataFrame({"name": pd.Series([], dtype="object"), "score": pd.Series([], dtype="float64")})
+    assert len(df) == 0
+
+    result_dedup = drop_duplicates(df)
+    assert len(result_dedup) == 0
+
+    result_fill = fill_median(df, "score")
+    assert len(result_fill) == 0
+
+    result_drop = drop_missing_rows(df, "score")
+    assert len(result_drop) == 0
+
+
+def test_clean_endpoint_returns_400_for_column_none_with_column_requiring_action():
+    # Edge case: /api/clean with a column-requiring action (fill_median) and
+    # column=None should return 400, not 500.
+    session_id = create_session_with_data()
+    response = client.post("/api/clean", json={
+        "session_id": session_id,
+        "action": "fill_median",
+        "column": None,
+        "dataset_name": "data",
+    })
+    assert response.status_code == 400
+
+
+def test_clean_endpoint_returns_400_for_nonexistent_dataset_name():
+    # Edge case: /api/clean with a dataset_name that doesn't exist in the session
+    # should return 400.
+    session_id = create_session_with_data()
+    response = client.post("/api/clean", json={
+        "session_id": session_id,
+        "action": "drop_duplicates",
+        "dataset_name": "nonexistent_dataset",
+    })
+    assert response.status_code == 400
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_two_chained_cleaning_actions():
+    # Edge case: second action operates on the already-cleaned DataFrame.
+    # Create data with duplicates AND missing values.
+    dataframes = {
+        "data": pd.DataFrame({
+            "name": ["Alice", "Bob", "Alice", "Bob", None],
+            "score": [90.0, 80.0, 90.0, 80.0, 70.0],
+        }),
+    }
+    session_id = create_session_with_data(dataframes)
+
+    # Step 1: drop_missing_rows on "name" — removes the row with None name.
+    response1 = client.post("/api/clean", json={
+        "session_id": session_id,
+        "action": "drop_missing_rows",
+        "column": "name",
+        "dataset_name": "data",
+    })
+    assert response1.status_code == 200
+    assert response1.json()["row_count"] == 4  # 5 - 1 missing = 4
+
+    # Step 2: drop_duplicates — removes 2 duplicate rows from the 4 remaining.
+    response2 = client.post("/api/clean", json={
+        "session_id": session_id,
+        "action": "drop_duplicates",
+        "dataset_name": "data",
+    })
+    assert response2.status_code == 200
+    assert response2.json()["row_count"] == 2  # 4 - 2 duplicates = 2
+
+    # Verify the session's working DataFrame reflects both actions.
+    session = session_store.get(session_id)
+    assert len(session.dataframes["data"]) == 2
+    # Original should still have all 5 rows.
+    assert len(session.dataframes_original["data"]) == 5
+
+
+def test_clean_endpoint_returns_400_for_fill_median_on_string_column():
+    # Edge case: endpoint test that fill_median targeting a string column
+    # returns 400 (not 500). The pure function raises ValueError which the
+    # route handler catches and converts to a 400 response.
+    dataframes = {
+        "data": pd.DataFrame({
+            "name": ["Alice", "Bob", None],
+            "score": [90.0, 80.0, 70.0],
+        }),
+    }
+    session_id = create_session_with_data(dataframes)
+    response = client.post("/api/clean", json={
+        "session_id": session_id,
+        "action": "fill_median",
+        "column": "name",
+        "dataset_name": "data",
+    })
+    assert response.status_code == 400
+    assert "not numeric" in response.json()["detail"]

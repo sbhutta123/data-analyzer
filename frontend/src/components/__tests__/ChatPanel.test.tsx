@@ -17,9 +17,10 @@ import { ChatPanel } from "../ChatPanel";
 import { useStore } from "../../store";
 import type { DatasetInfo } from "../../store";
 
-// Mock sendChatMessage so tests don't make real fetch calls
+// Mock API calls so tests don't make real fetch calls
 vi.mock("../../api", () => ({
   sendChatMessage: vi.fn().mockResolvedValue(undefined),
+  resetDatasets: vi.fn().mockResolvedValue({ datasets: {} }),
 }));
 
 const TEST_DATASET_INFO: DatasetInfo = {
@@ -45,6 +46,7 @@ function resetStore() {
     isStreaming: false,
     datasetInfo: TEST_DATASET_INFO,
     sessionId: "test-session",
+    hasAppliedCleaning: false,
   });
 }
 

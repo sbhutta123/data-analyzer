@@ -3,14 +3,12 @@
 // on the chat screen. Includes dataset metadata, cleaning suggestion action cards,
 // and clickable suggested question cards.
 // Supports: PRD #2 (initial summary), #4 (cleaning suggestions)
-// Key deps: store.ts (DatasetInfo), CleaningSuggestionCard, api.ts (resetDatasets)
+// Key deps: store.ts (DatasetInfo), CleaningSuggestionCard
 // Architecture ref: "Frontend Architecture" in planning/architecture.md §4
 
-import { useState } from "react";
 import { useStore } from "../store";
 import type { DatasetMetadata } from "../store";
 import { CleaningSuggestionCard } from "./CleaningSuggestionCard";
-import { resetDatasets } from "../api";
 
 interface DataSummaryProps {
   onSuggestedQuestionClick?: (question: string) => void;
@@ -96,49 +94,6 @@ function DatasetMetadataSection({
   );
 }
 
-function ResetButton() {
-  const sessionId = useStore((s) => s.sessionId);
-  const setDatasetInfo = useStore((s) => s.setDatasetInfo);
-  const datasetInfo = useStore((s) => s.datasetInfo);
-  const [isResetting, setIsResetting] = useState(false);
-
-  async function handleReset() {
-    if (!sessionId || !datasetInfo || isResetting) return;
-    setIsResetting(true);
-    try {
-      const result = await resetDatasets(sessionId);
-      setDatasetInfo({
-        ...datasetInfo,
-        datasets: result.datasets,
-      });
-    } catch {
-      // Reset failure is non-critical — the user can retry.
-    } finally {
-      setIsResetting(false);
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={handleReset}
-      disabled={isResetting}
-      style={{
-        padding: "6px 14px",
-        fontSize: 13,
-        fontWeight: 500,
-        background: "#fff",
-        border: "1px solid #d1d5db",
-        borderRadius: 5,
-        cursor: isResetting ? "not-allowed" : "pointer",
-        color: "#374151",
-      }}
-    >
-      {isResetting ? "Resetting..." : "Reset to original"}
-    </button>
-  );
-}
-
 export function DataSummary({ onSuggestedQuestionClick }: DataSummaryProps = {}) {
   const datasetInfo = useStore((s) => s.datasetInfo);
 
@@ -207,12 +162,9 @@ export function DataSummary({ onSuggestedQuestionClick }: DataSummaryProps = {})
         {/* Cleaning suggestions */}
         {hasCleaningSuggestions && (
           <div style={{ marginTop: 20 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <p style={{ fontSize: 14, fontWeight: 500, color: "#444", margin: 0 }}>
-                I noticed a few data quality issues:
-              </p>
-              <ResetButton />
-            </div>
+            <p style={{ fontSize: 14, fontWeight: 500, color: "#444", margin: "0 0 10px" }}>
+              I noticed a few data quality issues:
+            </p>
             {summary!.cleaning_suggestions.map((suggestion, idx) => (
               <CleaningSuggestionCard key={idx} suggestion={suggestion} />
             ))}

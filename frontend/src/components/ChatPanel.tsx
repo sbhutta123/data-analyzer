@@ -8,14 +8,60 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
-import { sendChatMessage } from "../api";
+import { sendChatMessage, resetDatasets } from "../api";
 import { DataSummary } from "./DataSummary";
 import { MessageBubble } from "./MessageBubble";
+
+function ResetButton() {
+  const sessionId = useStore((s) => s.sessionId);
+  const setDatasetInfo = useStore((s) => s.setDatasetInfo);
+  const datasetInfo = useStore((s) => s.datasetInfo);
+  const setHasAppliedCleaning = useStore((s) => s.setHasAppliedCleaning);
+  const [isResetting, setIsResetting] = useState(false);
+
+  async function handleReset() {
+    if (!sessionId || !datasetInfo || isResetting) return;
+    setIsResetting(true);
+    try {
+      const result = await resetDatasets(sessionId);
+      setDatasetInfo({
+        ...datasetInfo,
+        datasets: result.datasets,
+      });
+      setHasAppliedCleaning(false);
+    } catch {
+      // Reset failure is non-critical — the user can retry.
+    } finally {
+      setIsResetting(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleReset}
+      disabled={isResetting}
+      style={{
+        padding: "6px 14px",
+        fontSize: 13,
+        fontWeight: 500,
+        background: "#fff",
+        border: "1px solid #d1d5db",
+        borderRadius: 5,
+        cursor: isResetting ? "not-allowed" : "pointer",
+        color: "#374151",
+      }}
+    >
+      {isResetting ? "Resetting..." : "Reset to original"}
+    </button>
+  );
+}
 
 export function ChatPanel() {
   const messages = useStore((s) => s.messages);
   const isStreaming = useStore((s) => s.isStreaming);
   const sessionId = useStore((s) => s.sessionId);
+  const hasAppliedCleaning = useStore((s) => s.hasAppliedCleaning);
 
   const [inputValue, setInputValue] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -38,6 +84,23 @@ export function ChatPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      {/* Header bar */}
+      {hasAppliedCleaning && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+            gap: 8,
+            borderBottom: "1px solid #e5e7eb",
+            background: "#f9fafb",
+            padding: "8px 24px",
+          }}
+        >
+          <ResetButton />
+        </div>
+      )}
+
       {/* Scrollable message area */}
       <div
         ref={scrollRef}
