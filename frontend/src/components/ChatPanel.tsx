@@ -18,10 +18,12 @@ function ResetButton() {
   const datasetInfo = useStore((s) => s.datasetInfo);
   const setHasAppliedCleaning = useStore((s) => s.setHasAppliedCleaning);
   const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   async function handleReset() {
     if (!sessionId || !datasetInfo || isResetting) return;
     setIsResetting(true);
+    setResetError(null);
     try {
       const result = await resetDatasets(sessionId);
       setDatasetInfo({
@@ -29,31 +31,37 @@ function ResetButton() {
         datasets: result.datasets,
       });
       setHasAppliedCleaning(false);
-    } catch {
-      // Reset failure is non-critical — the user can retry.
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Reset failed. Please try again.";
+      setResetError(message);
     } finally {
       setIsResetting(false);
     }
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleReset}
-      disabled={isResetting}
-      style={{
-        padding: "6px 14px",
-        fontSize: 13,
-        fontWeight: 500,
-        background: "#fff",
-        border: "1px solid #d1d5db",
-        borderRadius: 5,
-        cursor: isResetting ? "not-allowed" : "pointer",
-        color: "#374151",
-      }}
-    >
-      {isResetting ? "Resetting..." : "Reset to original"}
-    </button>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {resetError && (
+        <span style={{ fontSize: 13, color: "#991b1b" }}>{resetError}</span>
+      )}
+      <button
+        type="button"
+        onClick={handleReset}
+        disabled={isResetting}
+        style={{
+          padding: "6px 14px",
+          fontSize: 13,
+          fontWeight: 500,
+          background: "#fff",
+          border: "1px solid #d1d5db",
+          borderRadius: 5,
+          cursor: isResetting ? "not-allowed" : "pointer",
+          color: "#374151",
+        }}
+      >
+        {isResetting ? "Resetting..." : "Reset to original"}
+      </button>
+    </div>
   );
 }
 
