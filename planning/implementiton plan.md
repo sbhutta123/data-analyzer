@@ -1379,9 +1379,10 @@ Manual verification: Upload a dataset with duplicates or missing values. Click a
 
 **Files to create/modify:**
 
-- `backend/llm.py` (modify — add retry logic)
+- `backend/main.py` (modify — retry orchestration: `_single_chat_attempt`, `_attempt_chat_with_retries`, `MAX_CHAT_RETRIES`)
+- `backend/llm.py` (modify — pure retry prompt builder: `build_retry_messages`, `TIMEOUT_RETRY_GUIDANCE`)
 - `backend/tests/test_error_recovery.py`
-- `frontend/src/components/MessageBubble.tsx` (modify — error display)
+- `frontend/src/components/MessageBubble.tsx` (modify — friendly error display with collapsible details)
 
 **Tests FIRST:**
 
