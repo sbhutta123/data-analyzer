@@ -106,19 +106,14 @@ ML workflow messages are appended to the existing `conversation_history` list so
 
 3. **`/api/ml-step` as a dedicated endpoint** — The implementation plan suggests "add `/api/ml-step` endpoint or extend `/api/chat`". We choose the dedicated endpoint for separation of concerns.
 
-## Decisions needing user input
+## Resolved decisions
 
-1. **Separate `/api/ml-step` endpoint vs. extending `/api/chat`?**
-   Recommendation: Separate endpoint. The ML workflow has stage-based routing, state mutations, and different response formats. Keeping it separate is cleaner for both backend testing and frontend consumption. The alternative (extending `/api/chat` with a `mode` parameter) would add branching complexity to an already-working endpoint.
+1. **Separate `/api/ml-step` endpoint** — dedicated endpoint, not extending `/api/chat`. Cleaner stage-based routing and testing.
 
-2. **What ML stages are supported in MVP?**
-   Recommendation: All 6 from the PRD — target, features, preprocessing, model, training, explanation. The implementation plan's test sketch covers 5 of 6 (missing preprocessing). Dropping preprocessing would simplify scope but the PRD lists it explicitly. Suggest keeping all 6.
+2. **All 6 ML stages in MVP** — target selection, feature selection, preprocessing, model selection, training/evaluation, explanation. Full PRD scope.
 
-3. **Should stage progression be strictly enforced?**
-   Recommendation: Yes — the endpoint validates that you can't skip stages (e.g., can't train without selecting features). But allow restarting from any earlier stage (which resets subsequent state). This prevents confusing half-configured states.
+3. **Strict stage progression with restart** — can't skip stages, but can restart from any earlier stage (resets subsequent state).
 
-4. **Classification threshold for integer targets?**
-   The implementation plan's test implies integers with few unique values (e.g., `[0, 1, 0, 1, 0]`) should be classified as classification. Recommendation: treat numeric columns with <= 10 unique values as classification. This handles binary labels (0/1) and small ordinal categories. Confirm this threshold.
+4. **Classification threshold: <= 10 unique values** — numeric columns with 10 or fewer unique values treated as classification. Covers binary labels and small ordinal categories.
 
-5. **Should the ML workflow support multi-DataFrame sessions?**
-   Recommendation: For MVP, require the user to specify which DataFrame to use (or default to the first/only one). Multi-DataFrame ML adds complexity (joins, feature selection across frames) that isn't in the PRD scope.
+5. **Single-DataFrame for MVP** — default to first/only DataFrame. Multi-DataFrame ML deferred.
