@@ -149,6 +149,21 @@ export async function uploadFile(
   return response.json() as Promise<UploadResponse>;
 }
 
+// ── Step 14: Export Notebook ──────────────────────────────────────────────────
+
+/**
+ * Trigger a browser download of the session's Jupyter notebook export.
+ *
+ * Uses window.open() instead of apiFetch because the endpoint returns a binary
+ * file download (not JSON). The browser handles the Content-Disposition header
+ * to save the file with the correct filename.
+ *
+ * PRD ref: #7 (Export)
+ */
+export function exportNotebook(sessionId: string): void {
+  window.open(`${API_BASE}/api/export/${sessionId}`, "_blank");
+}
+
 // ── Step 9: Chat SSE Client ────────────────────────────────────────────────
 
 export interface ChatCallbacks {

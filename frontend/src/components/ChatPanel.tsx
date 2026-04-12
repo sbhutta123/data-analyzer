@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
-import { sendChatMessage } from "../api";
+import { sendChatMessage, exportNotebook } from "../api";
 import { DataSummary } from "./DataSummary";
 import { MessageBubble } from "./MessageBubble";
 
@@ -36,8 +36,44 @@ export function ChatPanel() {
     setInputValue("");
   }
 
+  function handleExport() {
+    if (!sessionId) return;
+    exportNotebook(sessionId);
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      {/* Header bar with export button */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          alignItems: "center",
+          padding: "8px 24px",
+          borderBottom: "1px solid #e5e7eb",
+          background: "#f9fafb",
+        }}
+      >
+        <button
+          type="button"
+          onClick={handleExport}
+          disabled={!sessionId}
+          aria-label="Export Notebook"
+          style={{
+            padding: "6px 14px",
+            fontSize: 13,
+            fontWeight: 500,
+            background: sessionId ? "#1a73e8" : "#d1d5db",
+            color: "#fff",
+            border: "none",
+            borderRadius: 6,
+            cursor: sessionId ? "pointer" : "not-allowed",
+          }}
+        >
+          Export Notebook
+        </button>
+      </div>
+
       {/* Scrollable message area */}
       <div
         ref={scrollRef}

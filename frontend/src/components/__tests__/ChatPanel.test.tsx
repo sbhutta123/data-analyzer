@@ -17,9 +17,10 @@ import { ChatPanel } from "../ChatPanel";
 import { useStore } from "../../store";
 import type { DatasetInfo } from "../../store";
 
-// Mock sendChatMessage so tests don't make real fetch calls
+// Mock API functions so tests don't make real fetch/navigation calls
 vi.mock("../../api", () => ({
   sendChatMessage: vi.fn().mockResolvedValue(undefined),
+  exportNotebook: vi.fn(),
 }));
 
 const TEST_DATASET_INFO: DatasetInfo = {
@@ -121,6 +122,25 @@ describe("ChatPanel", () => {
 
     const sendButton = screen.getByRole("button", { name: /send/i });
     expect(sendButton).toBeDisabled();
+  });
+
+  // Behavior 30 — Export button (Step 14)
+  it("renders an Export Notebook button", () => {
+    render(<ChatPanel />);
+    const exportButton = screen.getByRole("button", { name: /export notebook/i });
+    expect(exportButton).toBeInTheDocument();
+    expect(exportButton).toBeEnabled();
+  });
+
+  it("clicking Export Notebook calls exportNotebook with the session ID", async () => {
+    const { exportNotebook } = await import("../../api");
+    const user = userEvent.setup();
+    render(<ChatPanel />);
+
+    const exportButton = screen.getByRole("button", { name: /export notebook/i });
+    await user.click(exportButton);
+
+    expect(exportNotebook).toHaveBeenCalledWith("test-session");
   });
 
   // Behavior 29
