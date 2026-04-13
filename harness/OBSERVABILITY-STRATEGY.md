@@ -296,10 +296,23 @@ class Diagnosis:
 
 @dataclass
 class ProposedFix:
-    description: str        # Plain-English description of the fix
-    files_changed: list[str]  # Which files the fix touches
-    diff: str               # The actual code diff
-    reproduction_steps: str # How to reproduce the original error
+    description: str            # Plain-English description of the fix
+    files_changed: list[str]    # Which source files the fix touches
+    diffs: list[FileDiff]       # One diff per file changed
+    reproduction_steps: str     # Step-by-step instructions to reproduce from a fresh session
+    regression_test: RegressionTest | None  # None if a test isn't feasible (boundary bugs)
+
+@dataclass
+class FileDiff:
+    file_path: str              # Relative to project root, e.g. "backend/llm.py"
+    description: str            # What this change does, one sentence
+    diff: str                   # Unified diff format
+
+@dataclass
+class RegressionTest:
+    test_file_path: str         # Where the test goes, e.g. "backend/tests/test_llm.py"
+    test_code: str              # The full test function(s) to add
+    description: str            # What the test verifies, one sentence
 ```
 
 **Example — systemic error producing a PR:**
@@ -347,22 +360,194 @@ user_message: "The AI service is temporarily busy. Please try again in a moment.
 proposed_fix: None
 ```
 
-### Implementation approach
+### The full debugging pipeline
 
-The troubleshooter is a function in `llm.py` (following the AI Logic Isolation principle from `coding_principles.md`). It makes a single LLM call with a diagnostic prompt. It is NOT a long-running agent, autonomous loop, or separate service. One error → one diagnosis → optionally one PR.
+The process has three distinct phases. Phase 1 is synchronous (the user is waiting). Phases 2 and 3 run as a background task — the user gets their friendly error message and moves on.
 
-The workflow:
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        RUNTIME (user's session)                        │
+│                                                                        │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐        │
+│  │ LLM call │───▶│ Exec code│───▶│ LLM call │───▶│ Exec code│──▶ 💥  │
+│  └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘  ERROR │
+│       │               │               │               │               │
+│       ▼               ▼               ▼               ▼               │
+│  ┌────────────────────────────────────────────────────────┐           │
+│  │              Context Buffer (last 20 ops)              │           │
+│  │  Actual user questions, LLM responses, generated code, │           │
+│  │  execution stdout, dataset metadata changes            │           │
+│  └────────────────────────────────────────────────────────┘           │
+│                                                                        │
+│  ┌────────────────────────────────────────────────────────┐           │
+│  │              Session State (always current)             │           │
+│  │  conversation_history, dataframes metadata, ml_state   │           │
+│  └────────────────────────────────────────────────────────┘           │
+└─────────────────────────────────────────────────────────────────────────┘
+         │ error + buffer + session state
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PHASE 1: DIAGNOSE (synchronous — user is waiting)                     │
+│                                                                        │
+│  Input:  DiagnosisRequest (error, buffer, conversation, df metadata)   │
+│  Action: Single LLM call — classify the error, identify root cause     │
+│  Output: Diagnosis with classification + user_message                  │
+│                                                                        │
+│  ┌─────────────────────┐                                               │
+│  │ Is it systemic?     │──── no ───▶ Return user_message. Done.        │
+│  └─────────┬───────────┘            (transient / user-caused)          │
+│            yes                                                         │
+│            │                                                           │
+│            ▼                                                           │
+│  Return user_message to user immediately.                              │
+│  Spawn background task for phases 2 + 3.                               │
+└─────────────────────────────────────────────────────────────────────────┘
+         │ diagnosis (systemic)
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PHASE 2: FIX (background — user doesn't wait or see this)            │
+│                                                                        │
+│  Input:  Diagnosis + access to the project's source files              │
+│  Action: LLM call(s) — read relevant source, generate a fix           │
+│                                                                        │
+│  2a. Identify which files to read                                      │
+│      The diagnosis names the root cause (e.g., "prompt in llm.py      │
+│      doesn't constrain column references"). The traceback names        │
+│      the file and line. From these, build a list of files to read.     │
+│                                                                        │
+│  2b. Read the source files                                             │
+│      Read the identified files from the local repo on disk.            │
+│      The backend process already has filesystem access to the          │
+│      project root — no special infrastructure needed.                  │
+│                                                                        │
+│  2c. Generate the fix                                                  │
+│      LLM call with: diagnosis + relevant source code + the context     │
+│      buffer entries that show what went wrong.                         │
+│      Returns: a diff (file path + old lines + new lines) and a         │
+│      plain-English description of the change.                          │
+│                                                                        │
+│  2d. Generate a test case                                              │
+│      For systemic (internal) bugs: LLM call to generate a regression  │
+│      test that would have caught this bug. Read the existing test      │
+│      file to match conventions.                                        │
+│      For systemic (boundary) bugs: test may not be feasible (depends  │
+│      on non-deterministic LLM output) — skip or generate a mock-based │
+│      test if the fix is to validation/parsing logic.                   │
+│                                                                        │
+│  Output: ProposedFix (description, diffs, reproduction steps, test)    │
+└─────────────────────────────────────────────────────────────────────────┘
+         │ proposed fix
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PHASE 3: PR (background — user doesn't wait or see this)             │
+│                                                                        │
+│  Input:  Diagnosis + ProposedFix                                       │
+│  Action: Create a branch, apply the fix, open a PR                     │
+│                                                                        │
+│  3a. Create a branch                                                   │
+│      Branch name: fix/troubleshooter/<short-description>-<timestamp>  │
+│      Created from the current main/default branch.                     │
+│                                                                        │
+│  3b. Apply the diff                                                    │
+│      Write the changed files to the branch. If the fix includes a     │
+│      new test, add that file too.                                      │
+│                                                                        │
+│  3c. Commit                                                            │
+│      Commit message: one-line summary of the fix.                      │
+│      Commit body: "Auto-generated by troubleshooter. See PR body       │
+│      for diagnosis and reproduction steps."                            │
+│                                                                        │
+│  3d. Push + open PR                                                    │
+│      PR title: "Fix: <one-line summary>"                               │
+│      PR body:                                                          │
+│        ## Diagnosis                                                    │
+│        - Classification: systemic (boundary|internal)                  │
+│        - What went wrong: ...                                          │
+│        - Root cause: ...                                               │
+│        - Evidence from context buffer: ...                             │
+│                                                                        │
+│        ## Reproduction                                                 │
+│        1. Upload a dataset with columns [...]                          │
+│        2. Ask: "exact user question"                                   │
+│        3. Observe: KeyError on column 'revenue'                        │
+│                                                                        │
+│        ## Fix                                                          │
+│        - Description: ...                                              │
+│        - Files changed: ...                                            │
+│                                                                        │
+│        ## Regression test                                              │
+│        - test_<description> added to <test_file>                       │
+│                                                                        │
+│        ⚠️ Auto-generated by troubleshooter — requires developer review │
+│                                                                        │
+│  3e. Never auto-merge. PR sits until a developer reviews it.           │
+│                                                                        │
+│  Implementation: GitHub API (or gh CLI). The backend needs a           │
+│  repo access token stored as an environment variable — NOT the         │
+│  user's API key.                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-1. Error hits a user-facing boundary in `main.py`
-2. `main.py` calls the troubleshooter with the `DiagnosisRequest`
-3. Troubleshooter makes one LLM call, returns a `Diagnosis`
-4. `main.py` returns `diagnosis.user_message` to the user (friendly, no internals)
-5. If `diagnosis.classification == "systemic"` and `diagnosis.proposed_fix` is not None, a background task opens a PR on the project repo with the diagnosis and diff
-6. The PR is assigned to the development team for review — the fix is never auto-merged
+### How each phase accesses what it needs
 
-**The user never sees step 5 or 6.** From their perspective, they got a helpful error message. The PR is a developer-to-developer artifact.
+| Phase | Needs | How it gets it |
+|-------|-------|----------------|
+| **1. Diagnose** | Error details, context buffer, conversation history, current dataframe metadata | All in-memory in the session. Passed via `DiagnosisRequest`. No filesystem or network access needed. |
+| **2. Fix** | Source code of the files that need changing, existing test files for conventions | Read from the local filesystem. The backend process runs in the project directory — `Path(__file__).parent` gives the backend root. No special access needed. |
+| **2. Fix** | LLM to generate the diff and test | Same LLM provider/model as the app uses, but called with the **project's own API key** (env var), not the user's BYOK key. The user's key is for their analysis session; the troubleshooter's work is a developer concern. |
+| **3. PR** | Git operations (branch, commit, push) and GitHub API (open PR) | A **repo access token** stored as an environment variable (e.g., `TROUBLESHOOTER_GITHUB_TOKEN`). This is a project-level secret, not a user-level credential. If the token isn't configured, Phase 3 logs the diagnosis locally and skips PR creation — the system degrades gracefully. |
 
-Keep the diagnostic prompt simple and stable. It receives the structured `DiagnosisRequest` and returns the structured `Diagnosis`. No tool use, no multi-turn reasoning — just pattern matching on the context buffer plus code generation for the fix.
+### What this means for infrastructure
+
+The troubleshooter needs two secrets that the app doesn't currently require:
+
+| Secret | Purpose | Fallback if missing |
+|--------|---------|-------------------|
+| `TROUBLESHOOTER_LLM_API_KEY` | LLM calls for diagnosis and fix generation (Phases 1-2) | Use the user's BYOK key for Phase 1 (diagnosis only — this is on the request path). Skip Phases 2-3 entirely. Log the diagnosis to server console. |
+| `TROUBLESHOOTER_GITHUB_TOKEN` | Git push + PR creation (Phase 3) | Skip Phase 3. Log the diagnosis + proposed fix to server console. A developer can manually apply it. |
+
+Both are optional. Without them, the system still diagnoses errors and returns friendly messages to the user — it just can't create PRs automatically. This keeps the prototype functional even without the secrets configured.
+
+### Implementation: not one function, a three-step pipeline
+
+The earlier draft described the troubleshooter as "a function in `llm.py` that makes a single LLM call." That was wrong — it's a pipeline:
+
+| Step | Where it lives | What it does | LLM calls |
+|------|---------------|-------------|-----------|
+| `diagnose()` | `llm.py` | Classify error, identify root cause, produce user message | 1 call |
+| `generate_fix()` | `troubleshooter.py` (new) | Read source files, generate diff + regression test | 1-2 calls |
+| `create_fix_pr()` | `troubleshooter.py` (new) | Branch, commit, push, open PR | 0 calls (GitHub API only) |
+
+`diagnose()` stays in `llm.py` — it's a pure LLM prompt function, consistent with the AI Logic Isolation principle.
+
+`generate_fix()` and `create_fix_pr()` go in a new `troubleshooter.py` module. They need filesystem access and GitHub API access, which don't belong in `llm.py`. This module orchestrates the background pipeline:
+
+```python
+async def handle_systemic_error(diagnosis: Diagnosis, session: Session) -> None:
+    """
+    Background task: generate a fix and open a PR for a systemic error.
+
+    Called by main.py after diagnose() returns a systemic classification.
+    Runs asynchronously — the user's response is not blocked by this.
+
+    Degrades gracefully:
+    - If TROUBLESHOOTER_LLM_API_KEY is missing, logs diagnosis and stops.
+    - If TROUBLESHOOTER_GITHUB_TOKEN is missing, logs diagnosis + fix and stops.
+    - If fix generation fails, logs diagnosis and stops.
+    - If PR creation fails, logs diagnosis + fix and stops.
+    """
+    fix = generate_fix(diagnosis)
+    if fix is None:
+        logger.warning("Troubleshooter: could not generate fix for: %s", diagnosis.summary)
+        return
+
+    pr_url = create_fix_pr(diagnosis, fix)
+    if pr_url is None:
+        logger.warning("Troubleshooter: fix generated but PR creation failed: %s", diagnosis.summary)
+        return
+
+    logger.info("Troubleshooter: PR created at %s for: %s", pr_url, diagnosis.summary)
+```
 
 ---
 
