@@ -11,7 +11,8 @@ Before starting work, read the documents listed for the matching task type. When
 
 | Task | Read these documents |
 |------|---------------------|
-| **Writing or implementing code** | `harness/execution_plan_principles.md`, `harness/coding_principles.md`, `harness/framework_patterns.md`, `harness/TEST-STRATEGY.md`, `harness/OBSERVABILITY-STRATEGY.md`, `harness/code_review_patterns.md`, `harness/reflection.md`, `planning/architecture.md`, `planning/implementiton plan.md` |
+| **Writing or implementing code (greenfield)** | `harness/execution_plan_principles.md`, `harness/coding_principles.md`, `harness/framework_patterns.md`, `harness/TEST-STRATEGY.md`, `harness/OBSERVABILITY-STRATEGY.md`, `harness/code_review_patterns.md`, `harness/reflection.md`, `planning/architecture.md`, `planning/implementiton plan.md` |
+| **Modifying existing code (brownfield)** | `harness/change_analysis_principles.md`, `harness/codebase_reconnaissance.md`, `harness/execution_plan_principles.md` (§ Brownfield Execution), `harness/coding_principles.md`, `harness/framework_patterns.md`, `harness/TEST-STRATEGY.md`, `harness/OBSERVABILITY-STRATEGY.md`, `harness/code_review_patterns.md`, `harness/reflection.md`, `planning/architecture.md` |
 | **Reviewing code** | `harness/code_review_patterns.md` |
 | **Writing or running tests** | `harness/TEST-STRATEGY.md`, `harness/coding_principles.md` |
 | **Adding error handling, logging, or tracing** | `harness/OBSERVABILITY-STRATEGY.md`, `harness/code_review_patterns.md` (§16 Logging), `harness/coding_principles.md` |
@@ -29,7 +30,14 @@ Before starting work, read the documents listed for the matching task type. When
 4. **Planning docs are context, not templates.** Read planning docs to understand project decisions and constraints. Do not copy code from them verbatim — defer to `harness/coding_principles.md` when they conflict.
 5. **Process gates are not optional.** When a harness document prescribes human review steps (e.g., TEST-STRATEGY.md Steps 1–2 require user confirmation before writing tests), follow them even when a planning document appears to pre-answer them. Planning documents propose; review steps confirm. Never skip a user confirmation gate because prior artifacts seem to cover it.
 6. **Full implementation lifecycle.** When implementing code, follow this sequence:
-   1. **Execution plan** — follow `harness/execution_plan_principles.md` to produce a plan for the step and get user confirmation before any coding begins
-   2. **Tests first** — follow `harness/TEST-STRATEGY.md` (behaviors → test cases → user confirmation → write tests → run failing → implement → run passing → break check → self-audit → user confirmation)
-   3. **Code review** — once tests pass, review all changed files against `harness/code_review_patterns.md` and fix any issues found
-   4. **Reflection** — follow `harness/reflection.md` to capture learnings and propose harness updates
+   - **Greenfield** (new modules/features):
+     1. **Execution plan** — follow `harness/execution_plan_principles.md` to produce a plan for the step and get user confirmation before any coding begins
+     2. **Tests first** — follow `harness/TEST-STRATEGY.md` (behaviors → test cases → user confirmation → write tests → run failing → implement → run passing → break check → self-audit → user confirmation)
+     3. **Code review** — once tests pass, review all changed files against `harness/code_review_patterns.md` and fix any issues found
+     4. **Reflection** — follow `harness/reflection.md` to capture learnings and propose harness updates
+   - **Brownfield** (modifying existing code):
+     1. **Change spec** — follow `harness/change_analysis_principles.md` to produce a change spec and get user confirmation
+     2. **Reconnaissance** — follow `harness/codebase_reconnaissance.md` to map dependencies, test coverage, and blast radius
+     3. **Execution plan** — follow `harness/execution_plan_principles.md` § Brownfield Execution (phases B0–B3 wrapping A–F)
+     4. **Code review** — once tests pass, review all changed files against `harness/code_review_patterns.md`
+     5. **Reflection** — follow `harness/reflection.md` to capture learnings and propose harness updates
