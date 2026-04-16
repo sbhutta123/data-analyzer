@@ -181,9 +181,79 @@ Refactors change module interfaces, data models, or API contracts — all of whi
 
 ---
 
+## Brownfield Execution
+
+Brownfield changes follow a different phase sequence than greenfield. The core difference: before you change anything, you must understand and protect what already works.
+
+### When to use brownfield execution
+
+Use this sequence when the change modifies existing code rather than creating new modules from scratch. The change spec (`harness/change_analysis_principles.md`) and codebase reconnaissance (`harness/codebase_reconnaissance.md`) must be complete before brownfield execution begins. Both produce branch-scoped artifacts (see Artifact Lifecycle below).
+
+### Brownfield phase sequence
+
+| Phase | Name | What happens |
+|-------|------|-------------|
+| B0 | Baseline | Run the full existing test suite. Record the result. If tests are already failing, document which ones and why — these are pre-existing, not your problem. This is your green baseline. |
+| B1 | Test spec + write | Present ALL test specs to the user: characterization tests for untested invariants AND feature tests for new/changed behavior. User confirms. Write all tests. Characterization tests pass, feature tests fail for the right reasons. |
+| B2 | Preparatory refactor | Only if reconnaissance revealed high coupling that makes the change risky. Refactor to isolate the change point. Characterization tests still pass, feature tests still fail. Skip if coupling is low or medium. |
+| C | Implementation | Make the change. Run ALL tests — feature tests now pass, characterization tests still pass, full suite green. |
+| D | Verification | Break-the-implementation check for new behavior. Also verify characterization tests catch regressions by temporarily reverting part of the change. Self-audit summary. Present for user confirmation. |
+| E | Code review | Scan changed files against `harness/code_review_patterns.md`. Fix violations, re-run tests. |
+| F | Reflection | Follow `harness/reflection.md`. Additionally: assess whether the touched code has better test coverage now than before the change. |
+| B3 | Cleanup | Update planning docs per `harness/updatingHigherLevelDocs.md`. Change spec and reconnaissance artifacts stay committed to the branch but are removed upon merge to main (see Artifact Lifecycle). |
+
+### Characterization tests
+
+Characterization tests fill in gaps in test coverage for desired behaviors within the blast radius of your change. That's the whole concept.
+
+Existing tests already protect some behaviors. Characterization tests cover the rest — the desired behaviors that nobody wrote tests for yet, but that your change could break. The change spec tells you exactly which behaviors these are: Section 5 (invariants to preserve) identifies them, and reconnaissance tells you which of those lack tests.
+
+**Do not write characterization tests for behaviors you intend to change.** Those get feature tests. Characterization tests are only for behaviors that should survive your change unchanged.
+
+Both types are presented together in B1 and written together, but they have different expected outcomes:
+
+| | Feature tests | Characterization tests |
+|---|---|---|
+| **Purpose** | Verify new/changed behavior works | Fill test gaps for existing desired behaviors in the blast radius |
+| **Expected initial result** | Fail (behavior doesn't exist yet) | Pass (behavior already exists) |
+| **After implementation** | Pass | Still pass |
+| **Kept permanently?** | Yes | Yes — they become regression tests for future changes |
+
+When writing characterization tests:
+- Test at the interface level (function inputs/outputs), not implementation details
+- Include edge cases that the reconnaissance flagged as implicit contracts
+- These tests stay in the codebase permanently — they're not scaffolding. They protect future maintainability.
+
+### Continuous regression discipline
+
+For brownfield changes, "run the tests" means run ALL tests, not just the ones you wrote:
+
+- **After B1 (all tests written):** Full suite. Characterization tests pass, feature tests fail for the right reasons, everything else unchanged from B0.
+- **After B2 (preparatory refactor):** Full suite. Characterization tests still pass, feature tests still fail.
+- **After C (implementation):** Full suite. All tests pass, no regressions.
+- **After E (code review fixes):** Full suite. Final green confirmation.
+
+If the full suite is slow, run at minimum: your new tests + characterization tests + tests in affected modules after each step, and the full suite at B0, after C, and after E.
+
+### Opportunistic test coverage
+
+Every brownfield change should leave the touched code better tested than it was before. This means:
+
+- If you touch an untested function, add characterization tests even if your change doesn't strictly require them.
+- If you fix a bug, write a regression test that fails without the fix.
+- If you refactor for testability, the improved structure makes it easier for future changes to add tests.
+
+This is not about achieving coverage metrics. It's about the practical principle that code you've just read and understood is code you're uniquely positioned to test. Future sessions won't have that context.
+
+### Artifact lifecycle
+
+The change spec and reconnaissance document are **branch-scoped artifacts**. They are committed to the branch during development — they provide context for the session, for code review, and for any future sessions on the same branch. They are removed upon merge to main. The commit messages and PR description carry the "why" into main; the working artifacts' job is done.
+
+---
+
 ## What the Execution Plan Does NOT Contain
 
-- **Behaviors to test** — those are proposed during Phase A, not upfront. The user may have changed their mind since the plan was written.
+- **Behaviors to test** — those are proposed during Phase A (greenfield) or B1 (brownfield), not upfront. The user may have changed their mind since the plan was written.
 - **Test code or implementation code** — the plan is a roadmap, not a code dump.
 - **Detailed prompt templates or API schemas** — those emerge during implementation.
 - **Resolved decisions** — once the user answers the questions in Section 6, incorporate their answers into the plan and proceed. Don't carry answered questions forward.
@@ -196,4 +266,4 @@ End the execution plan with a clear prompt asking the user to confirm, adjust, o
 
 > "Does this plan look good? Would you like to adjust the scope, implementation approach, or phasing before I begin?"
 
-Only after the user confirms should you move into Phase A.
+Only after the user confirms should you move into Phase A (greenfield) or B0 (brownfield).
